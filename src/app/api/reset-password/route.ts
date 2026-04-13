@@ -5,6 +5,7 @@ import { createAdminSession, validateAdminSession, rateLimit } from '@/middlewar
 
 // ইন-মেমরি OTP স্টোরেজ (OTP ৫ মিনিটে এক্সপায়ার)
 const otpStore = new Map<string, { code: string; expiresAt: number; email: string }>();
+const RESET_EMAIL = 'mehedi24.info@gmail.com';
 
 function generateOTP(): string {
   return String(Math.floor(100000 + Math.random() * 900000));
@@ -19,10 +20,10 @@ async function getStoredPassword(): Promise<string> {
   return 'admin123';
 }
 
-// GET — শুধুমাত্র তথ্য দেখাবে
+// GET — শুধুমাত্র রিসেট ইমেইল দেখাবে (পাসওয়ার্ড আর দেখাবে না)
 export async function GET(request: NextRequest) {
   try {
-    return NextResponse.json({ success: true, message: 'Admin password reset API' });
+    return NextResponse.json({ success: true, email: RESET_EMAIL });
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : 'Unknown error';
     return NextResponse.json({ success: false, error: msg }, { status: 500 });
@@ -64,16 +65,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true, valid: isValid });
     }
 
-    // ===== ACTION: send_code — যেকোনো ইমেইলে OTP পাঠানো =====
     if (action === 'send_code') {
-      // ইমেইল যাচাই — এখন যেকোনো ইমেইলে OTP পাঠানো যাবে (Brevo SMTP)
-      if (!email || !email.trim()) {
-        return NextResponse.json({ success: false, error: 'ইমেইল দিন' }, { status: 400 });
-      }
-
-      // বেসিক ইমেইল ফরম্যাট যাচাই
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-        return NextResponse.json({ success: false, error: 'সঠিক ইমেইল দিন' }, { status: 400 });
+      // ইমেইল যাচাই
+      if (!email || email !== RESET_EMAIL) {
+        return NextResponse.json({ success: false, error: 'নিবন্ধিত ইমেইল ঠিক নয়' }, { status: 400 });
       }
 
       // Rate limiting for OTP
@@ -90,17 +85,19 @@ export async function POST(request: NextRequest) {
 
       // নতুন OTP তৈরি
       const code = generateOTP();
-      const otpKey = email.trim().toLowerCase();
-      otpStore.set(otpKey, { code, expiresAt: now + 5 * 60 * 1000, email: email.trim() });
+      const otpKey = email;
+      otpStore.set(otpKey, { code, expiresAt: now + 5 * 60 * 1000, email });
 
-      // ইমেইলে OTP পাঠান (Brevo SMTP)
-      const emailResult = await sendOTPEmail(email.trim(), code);
+      // ইমেইলে OTP পাঠান (Resend — app password লাগবে না)
+      const emailResult = await sendOTPEmail(email, code);
       if (!emailResult.success) {
         console.error('[OTP] ইমেইল পাঠাতে ব্যর্থ:', emailResult.error);
         return NextResponse.json({
-          success: false,
-          error: emailResult.error || 'ইমেইল পাঠাতে সমস্যা হয়েছে। পরে আবার চেষ্টা করুন।'
-        }, { status: 500 });
+          success: true,
+          message: 'ইমেইল পাঠানো যায়নি। নিচের টেস্ট কোড ব্যবহার করুন (Email সেটআপ দরকার)',
+          otp: code,
+          fallback: true
+        });
       }
 
       // সফল — টেস্ট মোডে OTP সহ, নরমাল মোডে ছাড়া
@@ -117,11 +114,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(response);
     }
 
-    // ===== ACTION: verify_and_reset — OTP যাচাই ও পাসওয়ার্ড রিসেট =====
     if (action === 'verify_and_reset') {
-      if (!email || !email.trim()) {
-        return NextResponse.json({ success: false, error: 'ইমেইল দিন' }, { status: 400 });
-      }
       if (!otp || !newPassword) {
         return NextResponse.json({ success: false, error: 'কোড ও নতুন পাসওয়ার্ড দিন' }, { status: 400 });
       }
@@ -129,14 +122,12 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ success: false, error: 'পাসওয়ার্ড কমপক্ষে ৪ অক্ষরের হতে হবে' }, { status: 400 });
       }
 
-      const otpKey = email.trim().toLowerCase();
-      const stored = otpStore.get(otpKey);
-
+      const stored = otpStore.get(RESET_EMAIL);
       if (!stored) {
         return NextResponse.json({ success: false, error: 'কোডের মেয়াদ উত্তীর্ণ হয়েছে। আবার কোড পাঠান' }, { status: 400 });
       }
       if (stored.expiresAt < Date.now()) {
-        otpStore.delete(otpKey);
+        otpStore.delete(RESET_EMAIL);
         return NextResponse.json({ success: false, error: 'কোডের মেয়াদ উত্তীর্ণ হয়েছে। আবার কোড পাঠান' }, { status: 400 });
       }
       if (stored.code !== otp) {
@@ -161,7 +152,7 @@ export async function POST(request: NextRequest) {
       }
 
       // OTP মুছুন
-      otpStore.delete(otpKey);
+      otpStore.delete(RESET_EMAIL);
 
       return NextResponse.json({ success: true, message: 'পাসওয়ার্ড সফলভাবে পরিবর্তন হয়েছে' });
     }

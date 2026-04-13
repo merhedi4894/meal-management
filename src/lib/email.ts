@@ -1,81 +1,45 @@
-import nodemailer from 'nodemailer';
+import { Resend } from 'resend';
 
-// ===== Brevo SMTP Configuration =====
-// এনভায়রনমেন্ট ভ্যারিয়েবল থেকে SMTP সেটিংস নেওয়া হয়
-// Brevo.com থেকে SMTP Key নিলে নিচের ভ্যারিয়েবলগুলো সেট করতে হবে:
-// SMTP_HOST=smtp-relay.brevo.com
-// SMTP_PORT=587
-// SMTP_USER=your-brevo-login-email
-// SMTP_PASS=xkeysib-xxxxxxxxxxxxxx (Brevo SMTP Key)
-// EMAIL_FROM=your-sender-email (পাঠানোর ইমেইল)
+// Resend API Key (no app password needed — just an API key from resend.com)
+let resendClient: Resend | null = null;
 
-let transporter: nodemailer.Transporter | null = null;
-
-function getTransporter(): nodemailer.Transporter | null {
-  if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
-    console.error('[Email] SMTP কনফিগারেশন পাওয়া যায়নি। SMTP_HOST, SMTP_USER, SMTP_PASS সেট করুন।');
+function getResendClient(): Resend | null {
+  if (!process.env.RESEND_API_KEY) {
+    console.error('[Email] RESEND_API_KEY .env তে সেট করা নেই');
     return null;
   }
-  if (!transporter) {
-    transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: parseInt(process.env.SMTP_PORT || '587', 10),
-      secure: false, // TLS ব্যবহার করে (port 587 এর জন্য false)
-      auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-      },
-      // টাইমআউট সেটিংস
-      connectionTimeout: 10000,
-      greetingTimeout: 5000,
-      socketTimeout: 10000,
-      // TLS অপশন
-      tls: {
-        ciphers: 'SSLv3',
-        rejectUnauthorized: false,
-      },
-    });
-
-    // কানেকশন ভেরিফাই (ঐচ্ছিক)
-    transporter.verify((error) => {
-      if (error) {
-        console.error('[Email] SMTP কানেকশন ত্রুটি:', error.message);
-        transporter = null;
-      } else {
-        console.log('[Email] SMTP সার্ভার সাথে সংযোগ সফল');
-      }
-    });
+  if (!resendClient) {
+    resendClient = new Resend(process.env.RESEND_API_KEY);
   }
-  return transporter;
+  return resendClient;
 }
 
-// পাঠানোর ইমেইল (From)
+// ইমেইল পাঠানোর সোর্স (Resend দিয়ে ভেরিফাইড ডোমেইন বা onboarding)
 function getFromEmail(): string {
+  // ইউজার যদি কাস্টম ইমেইল সেট করে থাকে
   if (process.env.EMAIL_FROM) return process.env.EMAIL_FROM;
-  if (process.env.SMTP_USER) return process.env.SMTP_USER;
-  return 'noreply@brevo.com';
+  // ডিফল্ট: Resend onboarding (ডোমেইন ভেরিফিকেশন ছাড়াই কাজ করে)
+  return 'Meal Management <onboarding@resend.dev>';
 }
 
-// ===== OTP ইমেইল পাঠানোর ফাংশন =====
-// Brevo SMTP দিয়ে যেকোনো ইমেইলে OTP পাঠানো যায়
+// OTP ইমেইল পাঠান (Resend — app password লাগবে না)
 export async function sendOTPEmail(to: string, otp: string): Promise<{ success: boolean; error?: string; testOtp?: string }> {
-  const transport = getTransporter();
+  const resend = getResendClient();
 
-  if (!transport) {
-    // SMTP কনফিগারেশন না থাকলে — টেস্ট মোডে OTP ফেরত দিন
-    console.log(`[Email] SMTP কনফিগ নেই — টেস্ট OTP: ${otp}`);
+  if (!resend) {
+    // RESEND_API_KEY না থাকলে — টেস্ট মোডে OTP ফেরত দিন
+    console.log(`[Email] RESEND_API_KEY নেই — টেস্ট OTP: ${otp}`);
     return {
       success: true,
       testOtp: otp,
-      error: 'SMTP কনফিগারেশন সেট করা নেই। টেস্ট OTP রেসপন্সে দেওয়া হলো।'
+      error: 'RESEND_API_KEY সেট করা নেই। টেস্ট OTP রেসপন্সে দেওয়া হলো।'
     };
   }
 
   try {
-    const fromEmail = getFromEmail();
-    const info = await transport.sendMail({
-      from: `"মিল ম্যানেজমেন্ট" <${fromEmail}>`,
-      to: to,
+    const { data, error } = await resend.emails.send({
+      from: getFromEmail(),
+      to: [to],
       subject: '🔐 পাসওয়ার্ড রিসেট - ভেরিফিকেশন কোড',
       html: `
         <div style="font-family: 'Segoe UI', Tahoma, sans-serif; max-width: 420px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 12px; background: #f9fafb;">
@@ -100,38 +64,16 @@ export async function sendOTPEmail(to: string, otp: string): Promise<{ success: 
       `
     });
 
-    console.log('[Email] OTP সফলভাবে পাঠানো হয়েছে:', info.messageId, '→', to);
+    if (error) {
+      console.error('[Resend] ইমেইল পাঠাতে ব্যর্থ:', error);
+      return { success: false, error: error.message };
+    }
+
+    console.log('[Resend] OTP পাঠানো হয়েছে:', data?.id);
     return { success: true };
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : 'Unknown error';
-    console.error('[Email] পাঠাতে ব্যর্থ:', msg);
-    return { success: false, error: msg };
-  }
-}
-
-// ===== জেনেরিক ইমেইল পাঠানোর ফাংশন (ভবিষ্যতে ব্যবহারের জন্য) =====
-export async function sendEmail(to: string, subject: string, html: string): Promise<{ success: boolean; error?: string }> {
-  const transport = getTransporter();
-
-  if (!transport) {
-    console.error('[Email] SMTP কনফিগারেশন নেই — ইমেইল পাঠানো যায়নি');
-    return { success: false, error: 'SMTP কনফিগারেশন সেট করা নেই' };
-  }
-
-  try {
-    const fromEmail = getFromEmail();
-    const info = await transport.sendMail({
-      from: `"মিল ম্যানেজমেন্ট" <${fromEmail}>`,
-      to: to,
-      subject: subject,
-      html: html,
-    });
-
-    console.log('[Email] ইমেইল সফলভাবে পাঠানো হয়েছে:', info.messageId, '→', to);
-    return { success: true };
-  } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : 'Unknown error';
-    console.error('[Email] পাঠাতে ব্যর্থ:', msg);
+    console.error('[Resend] পাঠাতে ব্যর্থ:', msg);
     return { success: false, error: msg };
   }
 }

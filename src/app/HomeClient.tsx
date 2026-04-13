@@ -43,6 +43,8 @@ const ADMIN_PASSWORD = 'admin123';
 function getAdminPassword(): string {
   return sessionStorage.getItem('adminPwd') || '';
 }
+const ADMIN_EMAIL = 'mehedi24.info@gmail.com';
+
 // Admin auth token পাওয়ার হেল্পার
 function getAdminToken(): string | null {
   return sessionStorage.getItem('adminToken');
@@ -5019,7 +5021,7 @@ function PasswordDialog({ onSuccess, onClose }: { onSuccess: (newPassword?: stri
             {error && <p className="text-sm text-red-600 font-medium">{error}</p>}
             <div className="text-right">
               <button onClick={() => setShowForgot(true)} className="text-xs text-amber-600 hover:text-amber-800 hover:underline font-medium">
-                পাসওয়ার্ড ভুলে গেছেন?
+                Forgot password?
               </button>
             </div>
           </div>
@@ -5034,12 +5036,11 @@ function PasswordDialog({ onSuccess, onClose }: { onSuccess: (newPassword?: stri
             {resetStep === 'email' ? (
               <>
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-slate-700">আপনার ইমেইল ঠিকানা</label>
-                  <Input type="email" placeholder="your-email@example.com" value={resetEmail}
+                  <label className="text-sm font-medium text-slate-700">রেজিস্টার্ড ইমেইল</label>
+                  <Input type="email" placeholder="email@example.com" value={resetEmail}
                     onChange={e => { setResetEmail(e.target.value); setResetError(''); }}
                     onKeyDown={e => e.key === 'Enter' && handleSendOtp()}
                     className="h-11" autoFocus />
-                  <p className="text-xs text-slate-500">OTP কোড এই ইমেইলে পাঠানো হবে</p>
                 </div>
                 {resetError && <p className="text-sm text-red-600 font-medium">{resetError}</p>}
                 {resetMsg && <p className="text-sm text-emerald-600 font-medium">{resetMsg}</p>}
@@ -5947,7 +5948,7 @@ export default function HomeClient() {
                     </button>
                     <span className="text-slate-300">|</span>
                     <button onClick={() => { setMoAuthMode('forgot'); setMoForgotStep(1); setMoForgotEmail(''); setMoForgotOtp(''); setMoForgotNewPassword(''); setMoForgotOtpSent(false); }} className="text-amber-600 hover:underline font-medium">
-                      পাসওয়ার্ড ভুলে গেছেন?
+                      Forgot Password?
                     </button>
                   </div>
                 </>
@@ -6065,7 +6066,7 @@ export default function HomeClient() {
                     </button>
                     <span className="text-slate-300">|</span>
                     <button onClick={() => { setMoAuthMode('forgot'); setMoForgotStep(1); setMoForgotEmail(''); setMoForgotOtp(''); setMoForgotNewPassword(''); setMoForgotOtpSent(false); }} className="text-amber-600 hover:underline font-medium">
-                      পাসওয়ার্ড ভুলে গেছেন?
+                      Forgot Password?
                     </button>
                   </div>
                 </>
