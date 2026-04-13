@@ -1,0 +1,53 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model PriceSetting {
+  id            String @id @default(cuid())
+  month         String // জানুয়ারি, ফেব্রুয়ারি etc.
+  year          String // 2026
+  breakfastPrice Int   @default(0)  // সকাল নাস্তা
+  lunchPrice     Int   @default(0)  // দুপুর মিল
+  morningSpecial Int   @default(0)  // সকাল স্পেশাল
+  lunchSpecial   Int   @default(0)  // দুপুর স্পেশাল
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([month, year])
+}
+
+model MealEntry {
+  id             String   @id @default(cuid())
+  entryDate      DateTime @default(now())   // Entry Date & Time
+  month          String                     // মাস (বাংলা)
+  year           String                     // বছর
+  officeId       String                     // অফিস আইডি
+  name           String   @default("")      // নাম
+  mobile         String   @default("")      // মোবাইল
+  breakfastCount Int      @default(0)      // সকাল নাস্তা সংখ্যা
+  lunchCount     Int      @default(0)      // দুপুর মিল সংখ্যা
+  morningSpecial Int      @default(0)      // সকাল স্পেশাল সংখ্যা
+  lunchSpecial   Int      @default(0)      // দুপুর স্পেশাল সংখ্যা
+  totalBill      Int      @default(0)      // মোট বিল
+  deposit        Int      @default(0)      // জমার পরিমাণ
+  depositDate    String   @default("")     // জমার তারিখ
+  designation    String   @default("")     // পদবী
+  department     String   @default("")     // বিভাগ
+  prevBalance    Int      @default(0)      // আগের ব্যালেন্স
+  curBalance     Int      @default(0)      // বর্তমান ব্যালেন্স
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model SystemSetting {
+  id        String   @id @default(cuid())
+  key       String   @unique             // admin_password ইত্যাদি
+  value     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
