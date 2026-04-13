@@ -96,13 +96,10 @@ async function createMealEntryForOrder(
   );
 
   if (existingEntry.rows.length > 0) {
-    // Update existing entry — add new counts
+    // Update existing entry — SET to MealOrder total values (NOT add)
+    // MealOrder is the source of truth for order counts
     const entry = existingEntry.rows[0] as any;
-    const newB = Number(entry.breakfastCount || 0) + breakfast;
-    const newL = Number(entry.lunchCount || 0) + lunch;
-    const newMS = Number(entry.morningSpecial || 0) + morningSpecial;
-    const newLS = Number(entry.lunchSpecial || 0) + lunchSpecial;
-    const newBill = newB * bp + newL * lp + newMS * ms + newLS * ls;
+    const newBill = breakfast * bp + lunch * lp + morningSpecial * ms + lunchSpecial * ls;
 
     await query(
       `UPDATE MealEntry
@@ -110,7 +107,7 @@ async function createMealEntryForOrder(
            morningSpecial = ?, lunchSpecial = ?,
            totalBill = ?, name = ?, mobile = ?, designation = ?
        WHERE id = ?`,
-      [newB, newL, newMS, newLS, newBill,
+      [breakfast, lunch, morningSpecial, lunchSpecial, newBill,
        order.name || entry.name, order.mobile || entry.mobile, order.designation || entry.designation,
        entry.id]
     );
@@ -130,35 +127,13 @@ async function createMealEntryForOrder(
 
     if (withSource) {
       const targetEntry = withSource as any;
-      // একই sourceOrderId দিয়ে আগে থেকেই linked entry আছে কিনা চেক করুন
-      if (targetEntry.sourceOrderId === sourceOrderId) {
-        // একই order — counts যোগ করুন
-        const newB = Number(targetEntry.breakfastCount || 0) + breakfast;
-        const newL = Number(targetEntry.lunchCount || 0) + lunch;
-        const newMS = Number(targetEntry.morningSpecial || 0) + morningSpecial;
-        const newLS = Number(targetEntry.lunchSpecial || 0) + lunchSpecial;
-        const newBill = newB * bp + newL * lp + newMS * ms + newLS * ls;
-
-        await query(
-          `UPDATE MealEntry
-           SET breakfastCount = ?, lunchCount = ?,
-               morningSpecial = ?, lunchSpecial = ?,
-               totalBill = ?, name = ?, mobile = ?, designation = ?
-           WHERE id = ?`,
-          [newB, newL, newMS, newLS, newBill,
-           order.name || targetEntry.name, order.mobile || targetEntry.mobile, order.designation || targetEntry.designation,
-           targetEntry.id]
-        );
-        return; // আপডেট হয়েছে, নতুন entry তৈরি করার দরকার নেই
-      } else {
-        // ভিন্ন sourceOrderId — একই officeId+date এ আরেকটি MealEntry আছে
-        // আগেরটা যেভাবে আছে রাখুন, নতুন entry তৈরি করুন (নিচে)
-      }
+      // ভিন্ন sourceOrderId — একই officeId+date এ আরেকটি order-linked MealEntry আছে
+      // আগেরটা যেভাবে আছে রাখুন, নতুন entry তৈরি করুন (নিচে)
     }
 
-    // ===== MANUAL ENTRY EXISTS but no sourceOrderId entry → create a NEW separate entry =====
-    // Do NOT modify the existing manual entry - it represents manual data
-    // Create a new entry with sourceOrderId for the order data
+    // ===== MANUAL ENTRY EXISTS but no sourceOrderId entry =====
+    // ম্যানুয়াল entry আলাদা রাখুন — নতুন order entry তৈরি করুন
+    // Display logic (SUM + GROUP BY) উভয় entry যোগ করবে → সঠিক মোট
     // Fall through to the "No existing entry — create new one" section below
   }
 

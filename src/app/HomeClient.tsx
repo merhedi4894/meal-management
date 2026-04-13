@@ -370,6 +370,26 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
 
   useEffect(() => { fetchSettings(); }, [fetchSettings]);
 
+  // Auto merge duplicates & recalculate on admin load (ensures data consistency)
+  useEffect(() => {
+    const cleanup = async () => {
+      try {
+        const res = await fetch('/api/entries?action=merge_duplicates');
+        const data = await res.json();
+        if (data.success && data.mergedCount > 0) {
+          console.log(`Auto-merged ${data.mergedCount} duplicate entries`);
+        }
+        // Also run full recalculate
+        const res2 = await fetch('/api/entries?action=recalculate_all');
+        const data2 = await res2.json();
+        if (data2.success) {
+          console.log(`Recalculated balances: ${data2.message}`);
+        }
+      } catch { /* silent — admin page still works */ }
+    };
+    cleanup();
+  }, []);
+
   // ===== Global auto-refresh: যেকোনো ডাটা পরিবর্তন হলে সব সেকশন রিফ্রেশ =====
   useEffect(() => {
     const handler = () => {

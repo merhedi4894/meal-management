@@ -283,6 +283,86 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: true, message: `${recalcCount} জন কর্মীর ব্যালেন্স রিক্যালকুলেট হয়েছে` });
     }
 
+    // ===== ACTION: MERGE DUPLICATES =====
+    // একই officeId + একই দিনের multiple entry → একটিতে মার্জ + balance recalculate
+    if (action === 'merge_duplicates') {
+      const allEntries = await db.mealEntry.findMany({ orderBy: { entryDate: 'asc' } });
+      
+      // Group by officeId + dateStr
+      const groups = new Map<string, any[]>();
+      for (const e of allEntries) {
+        const dateStr = (e.entryDate || '').substring(0, 10);
+        const key = `${e.officeId}_${dateStr}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key)!.push(e);
+      }
+
+      let mergedCount = 0;
+      const toDelete: string[] = [];
+      const toUpdate: Array<{ id: string; breakfastCount: number; lunchCount: number; morningSpecial: number; lunchSpecial: number; deposit: number; name: string; mobile: string; designation: string }> = [];
+
+      for (const [key, entries] of groups) {
+        if (entries.length <= 1) continue;
+        
+        // Keep first entry, merge others into it
+        const keep = entries[0];
+        let bSum = Number(keep.breakfastCount) || 0;
+        let lSum = Number(keep.lunchCount) || 0;
+        let msSum = Number(keep.morningSpecial) || 0;
+        let lsSum = Number(keep.lunchSpecial) || 0;
+        let depSum = Number(keep.deposit) || 0;
+        let bestName = keep.name || '';
+        let bestMobile = keep.mobile || '';
+        let bestDesig = (keep as any).designation || '';
+        
+        for (let i = 1; i < entries.length; i++) {
+          const dup = entries[i];
+          bSum += Number(dup.breakfastCount) || 0;
+          lSum += Number(dup.lunchCount) || 0;
+          msSum += Number(dup.morningSpecial) || 0;
+          lsSum += Number(dup.lunchSpecial) || 0;
+          depSum += Number(dup.deposit) || 0;
+          if (!bestName && dup.name) bestName = dup.name;
+          if (!bestMobile || (dup.mobile && dup.mobile.length > bestMobile.length)) bestMobile = dup.mobile || bestMobile;
+          if (!bestDesig && (dup as any).designation) bestDesig = (dup as any).designation;
+          toDelete.push(dup.id);
+        }
+        
+        toUpdate.push({ id: keep.id, breakfastCount: bSum, lunchCount: lSum, morningSpecial: msSum, lunchSpecial: lsSum, deposit: depSum, name: bestName, mobile: bestMobile, designation: bestDesig });
+        mergedCount += entries.length - 1;
+      }
+
+      // Delete duplicates
+      for (const id of toDelete) {
+        try { await query('DELETE FROM MealEntry WHERE id = ?', [id]); } catch { /* skip */ }
+      }
+      // Update merged entries
+      for (const u of toUpdate) {
+        try {
+          await query(
+            `UPDATE MealEntry SET breakfastCount = ?, lunchCount = ?, morningSpecial = ?, lunchSpecial = ?, deposit = ?, name = ?, mobile = ?, designation = ? WHERE id = ?`,
+            [u.breakfastCount, u.lunchCount, u.morningSpecial, u.lunchSpecial, u.deposit, u.name, u.mobile, u.designation, u.id]
+          );
+        } catch { /* skip */ }
+      }
+
+      // Recalculate all balances
+      const uniqueOfficeIds = [...new Set(toUpdate.map(u => {
+        const e = allEntries.find(a => a.id === u.id);
+        return e?.officeId || '';
+      }).filter(Boolean))];
+      for (const oid of uniqueOfficeIds) {
+        await recalculateAllBalances(oid, db);
+      }
+
+      return NextResponse.json({
+        success: true,
+        message: `${mergedCount}টি ডুপ্লিকেট এন্ট্রি মার্জ হয়েছে, ${uniqueOfficeIds.length} জনের ব্যালেন্স আপডেট হয়েছে`,
+        mergedCount,
+        balanceUpdated: uniqueOfficeIds.length,
+      });
+    }
+
     // ===== ACTION: SYNC MOBILE NUMBERS =====
     if (action === 'sync_mobile') {
       const count = await syncMobileNumbers(db);
@@ -811,7 +891,7 @@ export async function GET(request: NextRequest) {
       const qStripped = stripLeadingZeros(qClean);
 
       // ===== সব সোর্স থেকে সার্চ করুন: MealEntry + MealUser + MealOrder =====
-      // Get all entries and filter manually for mobile matching with stripped zeros
+      // Combine ALL match types (not just top scorer) + search MealUser/MealOrder
       const allEntries = await db.mealEntry.findMany({
         orderBy: { entryDate: 'asc' }
       });
@@ -854,22 +934,24 @@ export async function GET(request: NextRequest) {
         }
       } catch { /* silent */ }
 
-      const filteredByOffice = allEntries.filter(e => e.officeId.toLowerCase().includes(q));
-      const filteredByMobile = qClean.length >= 4 ? allEntries.filter(e => {
+      // ===== COMBINE all match types (officeId + mobile + name) =====
+      const matchedByOffice = allEntries.filter(e => e.officeId.toLowerCase().includes(q));
+      const matchedByMobile = qClean.length >= 4 ? allEntries.filter(e => {
         const mobileClean = (e.mobile || '').replace(/\D/g, '');
         const mobileStripped = stripLeadingZeros(mobileClean);
         return mobileClean.includes(qClean) || mobileStripped.includes(qClean) || mobileStripped.includes(qStripped) || qStripped.includes(mobileStripped);
       }) : [];
-      // Name search
-      const filteredByName = q.length >= 2 && !/^\d+$/.test(q) ? allEntries.filter(e => e.name && e.name.toLowerCase().includes(q)) : [];
+      const matchedByName = q.length >= 2 && !/^\d+$/.test(q) ? allEntries.filter(e => e.name && e.name.toLowerCase().includes(q)) : [];
 
-      // Use the match with most results (best match), not just first non-empty
-      const matchScores = [
-        { results: filteredByOffice, score: filteredByOffice.length * 10 },
-        { results: filteredByMobile, score: filteredByMobile.length * 5 },
-        { results: filteredByName, score: filteredByName.length * 3 },
-      ].filter(m => m.results.length > 0).sort((a, b) => b.score - a.score);
-      let allMatchingRaw = matchScores.length > 0 ? matchScores[0].results : [];
+      // Combine all matches using a Set to avoid duplicates
+      const matchedIds = new Set<string>();
+      const allMatchingRaw: typeof allEntries = [];
+      for (const e of [...matchedByOffice, ...matchedByMobile, ...matchedByName]) {
+        if (!matchedIds.has(e.id)) {
+          matchedIds.add(e.id);
+          allMatchingRaw.push(e);
+        }
+      }
 
       // MealEntry তে না পাওয়া গেলে কিন্তু MealUser/MealOrder এ পাওয়া গেলে
       if (allMatchingRaw.length === 0 && extraOfficeIds.length > 0) {

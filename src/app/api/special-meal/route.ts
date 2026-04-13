@@ -125,15 +125,32 @@ export async function GET(request: NextRequest) {
       const morningSpecialActive = isActive && specialRow && Number(specialRow.morningSpecial) === 1;
       const lunchSpecialActive = isActive && specialRow && Number(specialRow.lunchSpecial) === 1;
 
-      // Get orders for this date — search থাকলে ফিল্টার করুন
+      // Get orders for this date — SINGLE SOURCE OF TRUTH: MealEntry (same as meal-order API)
+      // This ensures consistency with all other sections
       let ordersResult;
       if (search && search.length >= 2) {
         ordersResult = await query(
-          'SELECT * FROM MealOrder WHERE orderDate = ? AND (officeId LIKE ? OR LOWER(name) LIKE ? OR mobile LIKE ?) ORDER BY name ASC',
+          `SELECT officeId, MAX(name) as name, MAX(mobile) as mobile, MAX(designation) as designation,
+                  COALESCE(SUM(breakfastCount),0) as breakfast,
+                  COALESCE(SUM(lunchCount),0) as lunch,
+                  COALESCE(SUM(morningSpecial),0) as morningSpecial,
+                  COALESCE(SUM(lunchSpecial),0) as lunchSpecial
+           FROM MealEntry WHERE substr(entryDate, 1, 10) = ? AND officeId != ''
+           AND (officeId LIKE ? OR LOWER(name) LIKE ? OR mobile LIKE ?)
+           GROUP BY officeId ORDER BY name ASC`,
           [orderDate, `%${search}%`, `%${search}%`, `%${search}%`]
         );
       } else {
-        ordersResult = await query('SELECT * FROM MealOrder WHERE orderDate = ? ORDER BY name ASC', [orderDate]);
+        ordersResult = await query(
+          `SELECT officeId, MAX(name) as name, MAX(mobile) as mobile, MAX(designation) as designation,
+                  COALESCE(SUM(breakfastCount),0) as breakfast,
+                  COALESCE(SUM(lunchCount),0) as lunch,
+                  COALESCE(SUM(morningSpecial),0) as morningSpecial,
+                  COALESCE(SUM(lunchSpecial),0) as lunchSpecial
+           FROM MealEntry WHERE substr(entryDate, 1, 10) = ? AND officeId != ''
+           GROUP BY officeId ORDER BY name ASC`,
+          [orderDate]
+        );
       }
       const orders = ordersResult.rows as any[];
 
@@ -260,10 +277,60 @@ export async function PUT(request: NextRequest) {
     }
 
     // সব ফিল্ড এক্স্যাক্ট ভ্যালু সেট করুন (নতুন করে সেট)
+    // MealOrder আপডেট + linked MealEntry ও আপডেট (single source of truth)
     await query(
       'UPDATE MealOrder SET breakfast = ?, lunch = ?, morningSpecial = ?, lunchSpecial = ? WHERE officeId = ? AND orderDate = ?',
       [Number(breakfast || 0), Number(lunch || 0), Number(morningSpecial || 0), Number(lunchSpecial || 0), officeId, orderDate]
     );
+
+    // MealEntry ও আপডেট — sourceOrderId linked entry খুঁজে আপডেট করুন
+    // নতুন ভ্যালু সেট করুন (MealOrder থেকে পাস করা values ইতিমধ্যে total)
+    try {
+      const dateStr = orderDate.substring(0, 10);
+      // MealOrder থেকে linked MealEntry খুঁজুন
+      const orderResult = await query('SELECT id FROM MealOrder WHERE officeId = ? AND orderDate = ?', [officeId, orderDate]);
+      if (orderResult.rows.length > 0) {
+        const orderId = (orderResult.rows[0] as any).id;
+        const linkedEntries = await query('SELECT * FROM MealEntry WHERE sourceOrderId = ?', [orderId]);
+        if (linkedEntries.rows.length > 0) {
+          const entry = linkedEntries.rows[0] as any;
+          await query(
+            `UPDATE MealEntry SET breakfastCount = ?, lunchCount = ?, morningSpecial = ?, lunchSpecial = ? WHERE id = ?`,
+            [Number(breakfast || 0), Number(lunch || 0), Number(morningSpecial || 0), Number(lunchSpecial || 0), entry.id]
+          );
+        }
+      }
+      // Balance recalculate
+      const { batchQuery } = await import('@/lib/db');
+      const allSettings = await (await import('@/lib/db')).db.priceSetting.findMany();
+      const settingMap = new Map<string, any>();
+      for (const s of allSettings) settingMap.set(`${s.month}|${s.year}`, s);
+      
+      function parseEntryDate(d: any): number {
+        if (!d) return 0;
+        if (typeof d === 'number') return d;
+        let s = String(d).trim();
+        if (/^\d{4}-\d{2}/.test(s)) {
+          const p = Date.parse(s.includes('Z') || s.includes('+') ? s : s + '+06:00');
+          return isNaN(p) ? 0 : p;
+        }
+        return Date.parse(s) || 0;
+      }
+      
+      const allEntries = await (await import('@/lib/db')).query('SELECT * FROM MealEntry WHERE officeId = ? ORDER BY rowid ASC', [officeId]);
+      const sorted = [...allEntries.rows].sort((a: any, b: any) => parseEntryDate(a.entryDate) - parseEntryDate(b.entryDate));
+      let runningBal = 0;
+      const stmts: Array<{sql: string; args: any[]}> = [];
+      for (const e of sorted) {
+        const ee = e as any;
+        const setting = settingMap.get(`${ee.month}|${String(ee.year)}`);
+        const bill = (Number(ee.breakfastCount)||0) * (setting?.breakfastPrice||0) + (Number(ee.lunchCount)||0) * (setting?.lunchPrice||0) + (Number(ee.morningSpecial)||0) * (setting?.morningSpecial||0) + (Number(ee.lunchSpecial)||0) * (setting?.lunchSpecial||0);
+        const curBal = runningBal + (Number(ee.deposit)||0) - bill;
+        stmts.push({sql: 'UPDATE MealEntry SET prevBalance = ?, curBalance = ?, totalBill = ? WHERE id = ?', args: [runningBal, curBal, bill, ee.id]});
+        runningBal = curBal;
+      }
+      if (stmts.length > 0) await batchQuery(stmts);
+    } catch { /* non-critical */ }
 
     return NextResponse.json({ success: true, message: 'অর্ডার আপডেট হয়েছে' });
   } catch (err: unknown) {
@@ -286,7 +353,35 @@ export async function DELETE(request: NextRequest) {
       if (!officeId || !orderDate) {
         return NextResponse.json({ success: false, error: 'অফিস আইডি ও তারিখ দরকার' }, { status: 400 });
       }
+      // MealOrder ডিলিট + linked MealEntry ও ডিলিট
+      try {
+        const orderRes = await query('SELECT id FROM MealOrder WHERE officeId = ? AND orderDate = ?', [officeId, orderDate]);
+        if (orderRes.rows.length > 0) {
+          const orderId = (orderRes.rows[0] as any).id;
+          await query('DELETE FROM MealEntry WHERE sourceOrderId = ?', [orderId]);
+        }
+      } catch { /* silent */ }
       await query('DELETE FROM MealOrder WHERE officeId = ? AND orderDate = ?', [officeId, orderDate]);
+      // Balance recalculate
+      try {
+        const { batchQuery: bq } = await import('@/lib/db');
+        const allSettings = await (await import('@/lib/db')).db.priceSetting.findMany();
+        const settingMap = new Map<string, any>();
+        for (const s of allSettings) settingMap.set(`${s.month}|${s.year}`, s);
+        function parseED(d: any): number {
+          if (!d) return 0; if (typeof d === 'number') return d;
+          let s = String(d).trim();
+          if (/^\d{4}-\d{2}/.test(s)) { const p = Date.parse(s.includes('Z') || s.includes('+') ? s : s + '+06:00'); return isNaN(p) ? 0 : p; }
+          return Date.parse(s) || 0;
+        }
+        const allE = await (await import('@/lib/db')).query('SELECT * FROM MealEntry WHERE officeId = ? ORDER BY rowid ASC', [officeId]);
+        const sorted = [...allE.rows].sort((a: any, b: any) => parseED(a.entryDate) - parseED(b.entryDate));
+        let rb = 0; const stmts: Array<{sql: string; args: any[]}> = [];
+        for (const e of sorted) { const ee = e as any; const st = settingMap.get(`${ee.month}|${String(ee.year)}`);
+          const bill = (Number(ee.breakfastCount)||0)*(st?.breakfastPrice||0)+(Number(ee.lunchCount)||0)*(st?.lunchPrice||0)+(Number(ee.morningSpecial)||0)*(st?.morningSpecial||0)+(Number(ee.lunchSpecial)||0)*(st?.lunchSpecial||0);
+          const cb = rb + (Number(ee.deposit)||0) - bill; stmts.push({sql:'UPDATE MealEntry SET prevBalance=?,curBalance=?,totalBill=? WHERE id=?',args:[rb,cb,bill,ee.id]}); rb=cb; }
+        if (stmts.length > 0) await bq(stmts);
+      } catch { /* non-critical */ }
       return NextResponse.json({ success: true, message: 'অর্ডার ডিলিট হয়েছে' });
     }
 
