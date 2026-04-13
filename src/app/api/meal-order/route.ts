@@ -156,32 +156,10 @@ async function createMealEntryForOrder(
       }
     }
 
-    // ===== MANUAL ENTRY FIX: withSource না পাওয়া গেলে → manual entry আছে (sourceOrderId নেই) =====
-    // manual entry UPDATE করুন — sourceOrderId সেট করুন যাতে GET list তে double-counting না হয়
-    if (!withSource) {
-      const manualEntry = sameDayEntries.rows[0] as any;
-      const newB = Number(manualEntry.breakfastCount || 0) + breakfast;
-      const newL = Number(manualEntry.lunchCount || 0) + lunch;
-      const newMS = Number(manualEntry.morningSpecial || 0) + morningSpecial;
-      const newLS = Number(manualEntry.lunchSpecial || 0) + lunchSpecial;
-      const newBill = newB * bp + newL * lp + newMS * ms + newLS * ls;
-      const entryMonth = manualEntry.month || month;
-      const entryYear = manualEntry.year || String(year);
-
-      await query(
-        `UPDATE MealEntry
-         SET breakfastCount = ?, lunchCount = ?,
-             morningSpecial = ?, lunchSpecial = ?,
-             totalBill = ?, name = ?, mobile = ?, designation = ?,
-             sourceOrderId = ?, month = ?, year = ?
-         WHERE id = ?`,
-        [newB, newL, newMS, newLS, newBill,
-         order.name || manualEntry.name, order.mobile || manualEntry.mobile, order.designation || manualEntry.designation,
-         sourceOrderId, entryMonth, entryYear,
-         manualEntry.id]
-      );
-      return; // manual entry আপডেট হয়েছে, নতুন entry তৈরির দরকার নেই
-    }
+    // ===== MANUAL ENTRY EXISTS but no sourceOrderId entry → create a NEW separate entry =====
+    // Do NOT modify the existing manual entry - it represents manual data
+    // Create a new entry with sourceOrderId for the order data
+    // Fall through to the "No existing entry — create new one" section below
   }
 
   // No existing entry — create new one
@@ -299,313 +277,90 @@ export async function GET(request: NextRequest) {
         return NextResponse.json({ success: false, error: 'তারিখ দিন' });
       }
 
-      // ===== সোর্স ১: MealOrder থেকে GROUP BY =====
-      const moSql = officeId
-        ? `SELECT officeId, MAX(name) as name, MAX(mobile) as mobile, MAX(designation) as designation, orderDate,
-           SUM(breakfast) as breakfast, SUM(lunch) as lunch, SUM(morningSpecial) as morningSpecial, SUM(lunchSpecial) as lunchSpecial,
-           MAX(month) as month, MAX(year) as year
-           FROM MealOrder WHERE orderDate = ? AND officeId = ? GROUP BY officeId, orderDate ORDER BY name ASC`
-        : `SELECT officeId, MAX(name) as name, MAX(mobile) as mobile, MAX(designation) as designation, orderDate,
-           SUM(breakfast) as breakfast, SUM(lunch) as lunch, SUM(morningSpecial) as morningSpecial, SUM(lunchSpecial) as lunchSpecial,
-           MAX(month) as month, MAX(year) as year
-           FROM MealOrder WHERE orderDate = ? GROUP BY officeId, orderDate ORDER BY name ASC`;
-      const moParams = officeId ? [orderDate, officeId] : [orderDate];
-      const moResult = await query(moSql, moParams);
+      // ===== SINGLE SOURCE OF TRUTH: MealEntry only =====
+      const dateStr = orderDate.substring(0, 10);
+      const whereClause = officeId
+        ? "substr(entryDate, 1, 10) = ? AND officeId = ? AND officeId != ''"
+        : "substr(entryDate, 1, 10) = ? AND officeId != ''";
+      const params = officeId ? [dateStr, officeId] : [dateStr];
 
-      // ===== সোর্স ২: MealEntry থেকে — admin দ্বারা তৈরি (sourceOrderId নেই) =====
-      const meSql = officeId
-        ? `SELECT officeId, MAX(name) as name, MAX(mobile) as mobile, MAX(designation) as designation,
-           COALESCE(SUM(breakfastCount),0) as breakfast, COALESCE(SUM(lunchCount),0) as lunch,
-           COALESCE(SUM(morningSpecial),0) as morningSpecial, COALESCE(SUM(lunchSpecial),0) as lunchSpecial,
-           MAX(month) as month, MAX(year) as year
-           FROM MealEntry WHERE substr(entryDate,1,10) = ? AND officeId = ?
-           AND (sourceOrderId IS NULL OR sourceOrderId = '')
-           GROUP BY officeId ORDER BY name ASC`
-        : `SELECT officeId, MAX(name) as name, MAX(mobile) as mobile, MAX(designation) as designation,
-           COALESCE(SUM(breakfastCount),0) as breakfast, COALESCE(SUM(lunchCount),0) as lunch,
-           COALESCE(SUM(morningSpecial),0) as morningSpecial, COALESCE(SUM(lunchSpecial),0) as lunchSpecial,
-           MAX(month) as month, MAX(year) as year
-           FROM MealEntry WHERE substr(entryDate,1,10) = ? AND officeId != ''
-           AND (sourceOrderId IS NULL OR sourceOrderId = '')
-           GROUP BY officeId ORDER BY name ASC`;
-      const meParams = officeId ? [orderDate, officeId] : [orderDate];
-      const meResult = await query(meSql, meParams);
+      const result = await query(
+        `SELECT officeId, MAX(name) as name, MAX(mobile) as mobile, MAX(designation) as designation,
+                COALESCE(SUM(breakfastCount),0) as breakfast,
+                COALESCE(SUM(lunchCount),0) as lunch,
+                COALESCE(SUM(morningSpecial),0) as morningSpecial,
+                COALESCE(SUM(lunchSpecial),0) as lunchSpecial
+         FROM MealEntry WHERE ${whereClause}
+         GROUP BY officeId ORDER BY name ASC`,
+        params
+      );
 
-      // ===== দুটি সোর্স মার্জ করুন =====
-      const mergedMap = new Map<string, any>();
+      const orders = result.rows
+        .filter((d: any) => Number(d.breakfast) > 0 || Number(d.lunch) > 0 || Number(d.morningSpecial) > 0 || Number(d.lunchSpecial) > 0)
+        .map((d: any) => ({
+          officeId: d.officeId || '', name: d.name || '', mobile: d.mobile || '', designation: d.designation || '',
+          breakfast: Number(d.breakfast) || 0, lunch: Number(d.lunch) || 0,
+          morningSpecial: Number(d.morningSpecial) || 0, lunchSpecial: Number(d.lunchSpecial) || 0,
+        }))
+        .sort((a: any, b: any) => a.name.localeCompare(b.name, 'bn'));
 
-      // ===== সেফটি ডেডুপ: MealEntry যেগুলোর sourceOrderId="" কিন্তু একই তারিখে MealOrder আছে =====
-      // এদের sourceOrderId সেট করুন (একবারই, পরবর্তী রিকোয়েস্টে ঠিক হবে)
-      try {
-        const orphanedEntries = meResult.rows.filter((me: any) => {
-          const oid = (me.officeId || '').trim().toLowerCase();
-          return mergedMap.has(oid); // MealOrder এও আছে → orphaned
-        });
-        if (orphanedEntries.length > 0) {
-          for (const oe of orphanedEntries) {
-            const oeAny = oe as any;
-            const oid = (oeAny.officeId || '').trim();
-            const matchingOrder = moResult.rows.find((mo: any) => (mo.officeId || '').trim().toLowerCase() === oid.trim().toLowerCase());
-            if (matchingOrder) {
-              const moAny = matchingOrder as any;
-              // Manual entry তে MealOrder এর sourceOrderId সেট করুন
-              await query(
-                `UPDATE MealEntry SET sourceOrderId = ?, month = COALESCE(NULLIF(month,''),?), year = COALESCE(NULLIF(CAST(year AS TEXT),''),?)
-                 WHERE officeId = ? AND substr(entryDate,1,10) = ? AND (sourceOrderId IS NULL OR sourceOrderId = '')`,
-                [moAny.id, moAny.month, String(moAny.year), oid, orderDate]
-              );
-            }
-          }
-          // রিফ্রেশ করুন — sourceOrderId আপডেটের পর আবার কুয়েরি করুন
-          const meResult2 = await query(meSql, meParams);
-          // meResult.rows = meResult2.rows; // can't reassign const, but we'll use meResult2 below
-          for (const row of meResult2.rows) {
-            const r = row as any;
-            const oid = (r.officeId || '').trim().toLowerCase();
-            if (!oid) continue;
-            const existing = mergedMap.get(oid);
-            if (existing) {
-              existing.breakfast += Number(r.breakfast) || 0;
-              existing.lunch += Number(r.lunch) || 0;
-              existing.morningSpecial += Number(r.morningSpecial) || 0;
-              existing.lunchSpecial += Number(r.lunchSpecial) || 0;
-              if (!existing.name && r.name) existing.name = r.name;
-              if (!existing.designation && r.designation) existing.designation = r.designation;
-              if (!existing.mobile && r.mobile) existing.mobile = r.mobile;
-            } else {
-              mergedMap.set(oid, {
-                officeId: r.officeId || '', name: r.name || '', mobile: r.mobile || '', designation: r.designation || '',
-                breakfast: Number(r.breakfast) || 0, lunch: Number(r.lunch) || 0,
-                morningSpecial: Number(r.morningSpecial) || 0, lunchSpecial: Number(r.lunchSpecial) || 0,
-              });
-            }
-          }
-          const orders = [...mergedMap.values()]
-            .filter(d => d.breakfast > 0 || d.lunch > 0 || d.morningSpecial > 0 || d.lunchSpecial > 0)
-            .sort((a, b) => a.name.localeCompare(b.name, 'bn'));
-
-          return NextResponse.json({
-            success: true,
-            orders,
-            total: orders.length,
-          });
-        }
-      } catch { /* safety dedup failed — continue with normal merge */ }
-      for (const row of moResult.rows) {
-        const r = row as any;
-        const oid = (r.officeId || '').trim().toLowerCase();
-        if (!oid) continue;
-        mergedMap.set(oid, {
-          officeId: r.officeId || '', name: r.name || '', mobile: r.mobile || '', designation: r.designation || '',
-          breakfast: Number(r.breakfast) || 0, lunch: Number(r.lunch) || 0,
-          morningSpecial: Number(r.morningSpecial) || 0, lunchSpecial: Number(r.lunchSpecial) || 0,
-        });
-      }
-      for (const row of meResult.rows) {
-        const r = row as any;
-        const oid = (r.officeId || '').trim().toLowerCase();
-        if (!oid) continue;
-        const existing = mergedMap.get(oid);
-        if (existing) {
-          existing.breakfast += Number(r.breakfast) || 0;
-          existing.lunch += Number(r.lunch) || 0;
-          existing.morningSpecial += Number(r.morningSpecial) || 0;
-          existing.lunchSpecial += Number(r.lunchSpecial) || 0;
-          if (!existing.name && r.name) existing.name = r.name;
-          if (!existing.designation && r.designation) existing.designation = r.designation;
-          if (!existing.mobile && r.mobile) existing.mobile = r.mobile;
-        } else {
-          mergedMap.set(oid, {
-            officeId: r.officeId || '', name: r.name || '', mobile: r.mobile || '', designation: r.designation || '',
-            breakfast: Number(r.breakfast) || 0, lunch: Number(r.lunch) || 0,
-            morningSpecial: Number(r.morningSpecial) || 0, lunchSpecial: Number(r.lunchSpecial) || 0,
-          });
-        }
-      }
-
-      const orders = [...mergedMap.values()]
-        .filter(d => d.breakfast > 0 || d.lunch > 0 || d.morningSpecial > 0 || d.lunchSpecial > 0)
-        .sort((a, b) => a.name.localeCompare(b.name, 'bn'));
-
-      return NextResponse.json({
-        success: true,
-        orders,
-        total: orders.length,
-      });
+      return NextResponse.json({ success: true, orders, total: orders.length });
     }
 
-    // ===== ACTION: SUMMARY — মাসিক মিলের বিবরণ (MealOrder + MealEntry) =====
+    // ===== ACTION: SUMMARY — মাসিক মিলের বিবরণ =====
     if (action === 'summary') {
       if (!month || !year) {
         return NextResponse.json({ success: false, error: 'মাস ও বছর দিন' });
       }
 
-      // মিলের দাম আনুন
-      const priceResult = await query(
-        'SELECT * FROM PriceSetting WHERE month = ? AND year = ?',
-        [month, year]
-      );
+      // Get meal prices
+      const priceResult = await query('SELECT * FROM PriceSetting WHERE month = ? AND year = ?', [month, year]);
       const prices = priceResult.rows.length > 0 ? priceResult.rows[0] as any : null;
-
       const bp = Number(prices?.breakfastPrice) || 0;
       const lp = Number(prices?.lunchPrice) || 0;
       const ms = Number(prices?.morningSpecial) || 0;
       const ls = Number(prices?.lunchSpecial) || 0;
 
-      // ===== সোর্স ১: MealOrder থেকে (month/year + orderDate দুইভাবে খুঁজবে) =====
-      const moWhere1 = officeId ? 'month = ? AND year = ? AND officeId = ?' : 'month = ? AND year = ?';
-      const moParams1 = officeId ? [month, year, officeId] : [month, year];
-      const moResult1 = await query(
-        `SELECT officeId, name, designation, mobile,
-                SUM(breakfast) as totalBreakfast,
-                SUM(lunch) as totalLunch,
-                SUM(morningSpecial) as totalMorningSpecial,
-                SUM(lunchSpecial) as totalLunchSpecial
-         FROM MealOrder WHERE ${moWhere1}
-         GROUP BY officeId ORDER BY name ASC`,
-        moParams1
-      );
+      // ===== SINGLE SOURCE OF TRUTH: MealEntry only =====
+      // Every MealOrder creates a linked MealEntry, so MealEntry contains all data
+      const whereClause = officeId
+        ? "month = ? AND year = ? AND officeId = ? AND officeId != ''"
+        : "month = ? AND year = ? AND officeId != ''";
+      const params = officeId ? [month, year, officeId] : [month, year];
 
-      const moResult1Rows = moResult1.rows;
-      const MONTHS_BN = [
-        'জানুয়ারি', 'ফেব্রুয়ারি', 'মার্চ', 'এপ্রিল', 'মে', 'জুন',
-        'জুলাই', 'আগস্ট', 'সেপ্টেম্বর', 'অক্টোবর', 'নভেম্বর', 'ডিসেম্বর'
-      ];
-      const monthIdx = MONTHS_BN.indexOf(month);
-      const datePrefix = monthIdx >= 0 ? `${year}-${String(monthIdx + 1).padStart(2, '0')}` : '';
-      let moResult2RowsArr: any[] = [];
-      if (datePrefix) {
-        const moWhere2 = officeId
-          ? '(month = \'\' OR month IS NULL) AND orderDate LIKE ? AND officeId = ?'
-          : '(month = \'\' OR month IS NULL) AND orderDate LIKE ?';
-        const moParams2 = officeId ? [datePrefix + '%', officeId] : [datePrefix + '%'];
-        const moResult2 = await query(
-          `SELECT officeId, name, designation, mobile,
-                  SUM(breakfast) as totalBreakfast,
-                  SUM(lunch) as totalLunch,
-                  SUM(morningSpecial) as totalMorningSpecial,
-                  SUM(lunchSpecial) as totalLunchSpecial
-           FROM MealOrder WHERE ${moWhere2}
-           GROUP BY officeId ORDER BY name ASC`,
-          moParams2
-        );
-        moResult2RowsArr = moResult2.rows;
-      }
-      const allMoRows = [...moResult1Rows, ...moResult2RowsArr];
-
-      // ===== সোর্স ২: MealEntry থেকে — sourceOrderId আছে এমন রো বাদ =====
-      const meWhere = officeId
-        ? 'month = ? AND year = ? AND officeId = ? AND officeId != \'\' AND (sourceOrderId IS NULL OR sourceOrderId = \'\')'
-        : 'month = ? AND year = ? AND officeId != \'\' AND (sourceOrderId IS NULL OR sourceOrderId = \'\')';
-      const meParams = officeId ? [month, year, officeId] : [month, year];
-      const meResult = await query(
-        `SELECT officeId, MAX(name) as name, MAX(designation) as designation, MAX(mobile) as mobile,
+      const result = await query(
+        `SELECT officeId, MAX(name) as name, MAX(mobile) as mobile, MAX(designation) as designation,
                 COALESCE(SUM(breakfastCount),0) as totalBreakfast,
                 COALESCE(SUM(lunchCount),0) as totalLunch,
                 COALESCE(SUM(morningSpecial),0) as totalMorningSpecial,
                 COALESCE(SUM(lunchSpecial),0) as totalLunchSpecial
-         FROM MealEntry
-         WHERE ${meWhere}
+         FROM MealEntry WHERE ${whereClause}
          GROUP BY officeId ORDER BY name ASC`,
-        meParams
+        params
       );
 
-      // ===== দুটি সোর্স মার্জ করুন =====
-      const mergedMap = new Map<string, {
-        officeId: string; name: string; designation: string; mobile: string;
-        totalBreakfast: number; totalLunch: number; totalMorningSpecial: number; totalLunchSpecial: number;
-      }>();
-
-      // MealOrder ডাটা যোগ করুন
-      for (const row of allMoRows) {
-        const r = row as any;
-        const oid = (r.officeId || '').trim().toLowerCase();
-        if (!oid) continue;
-        mergedMap.set(oid, {
-          officeId: r.officeId || '',
-          name: r.name || '',
-          designation: r.designation || '',
-          mobile: r.mobile || '',
-          totalBreakfast: Number(r.totalBreakfast) || 0,
-          totalLunch: Number(r.totalLunch) || 0,
-          totalMorningSpecial: Number(r.totalMorningSpecial) || 0,
-          totalLunchSpecial: Number(r.totalLunchSpecial) || 0,
-        });
-      }
-
-      // MealEntry ডাটা যোগ করুন (পূর্বের সাথে যোগ হবে)
-      for (const row of meResult.rows) {
-        const r = row as any;
-        const oid = (r.officeId || '').trim().toLowerCase();
-        if (!oid) continue;
-        const existing = mergedMap.get(oid);
-        const entryB = Number(r.totalBreakfast) || 0;
-        const entryL = Number(r.totalLunch) || 0;
-        const entryMS = Number(r.totalMorningSpecial) || 0;
-        const entryLS = Number(r.totalLunchSpecial) || 0;
-        if (existing) {
-          // আগে থেকে MealOrder-এ আছে — মিল কাউন্ট যোগ করুন
-          existing.totalBreakfast += entryB;
-          existing.totalLunch += entryL;
-          existing.totalMorningSpecial += entryMS;
-          existing.totalLunchSpecial += entryLS;
-          // নাম/মোবাইল/পদবী যদি খালি থাকে MealEntry থেকে নিন
-          if (!existing.name && r.name) existing.name = r.name;
-          if (!existing.designation && r.designation) existing.designation = r.designation;
-          if (!existing.mobile && r.mobile) existing.mobile = r.mobile;
-        } else {
-          // নতুন — MealEntry থেকে আসা
-          mergedMap.set(oid, {
-            officeId: r.officeId || '',
-            name: r.name || '',
-            designation: r.designation || '',
-            mobile: r.mobile || '',
-            totalBreakfast: entryB,
-            totalLunch: entryL,
-            totalMorningSpecial: entryMS,
-            totalLunchSpecial: entryLS,
-          });
-        }
-      }
-
-      // মোট সামগ্রিক হিসাব করুন
       let grandB = 0, grandL = 0, grandMS = 0, grandLS = 0;
-      const details = [...mergedMap.values()]
-        .filter(d => d.totalBreakfast > 0 || d.totalLunch > 0 || d.totalMorningSpecial > 0 || d.totalLunchSpecial > 0)
-        .sort((a, b) => a.name.localeCompare(b.name, 'bn'))
-        .map(d => {
-          grandB += d.totalBreakfast;
-          grandL += d.totalLunch;
-          grandMS += d.totalMorningSpecial;
-          grandLS += d.totalLunchSpecial;
+      const details = result.rows
+        .filter((d: any) => Number(d.totalBreakfast) > 0 || Number(d.totalLunch) > 0 || Number(d.totalMorningSpecial) > 0 || Number(d.totalLunchSpecial) > 0)
+        .map((d: any) => {
+          const tB = Number(d.totalBreakfast) || 0;
+          const tL = Number(d.totalLunch) || 0;
+          const tMS = Number(d.totalMorningSpecial) || 0;
+          const tLS = Number(d.totalLunchSpecial) || 0;
+          grandB += tB; grandL += tL; grandMS += tMS; grandLS += tLS;
           return {
-            officeId: d.officeId,
-            name: d.name,
-            designation: d.designation,
-            mobile: d.mobile,
-            totalBreakfast: d.totalBreakfast,
-            totalLunch: d.totalLunch,
-            totalMorningSpecial: d.totalMorningSpecial,
-            totalLunchSpecial: d.totalLunchSpecial,
-            totalBill: (d.totalBreakfast * bp) + (d.totalLunch * lp) + (d.totalMorningSpecial * ms) + (d.totalLunchSpecial * ls),
+            officeId: d.officeId || '', name: d.name || '', designation: d.designation || '', mobile: d.mobile || '',
+            totalBreakfast: tB, totalLunch: tL, totalMorningSpecial: tMS, totalLunchSpecial: tLS,
+            totalBill: tB * bp + tL * lp + tMS * ms + tLS * ls,
           };
-        });
+        })
+        .sort((a: any, b: any) => a.name.localeCompare(b.name, 'bn'));
 
-      const grandTotal = (grandB * bp) + (grandL * lp) + (grandMS * ms) + (grandLS * ls);
+      const grandTotal = grandB * bp + grandL * lp + grandMS * ms + grandLS * ls;
 
       return NextResponse.json({
         success: true,
-        summary: {
-          totalBreakfast: grandB,
-          totalLunch: grandL,
-          totalMorningSpecial: grandMS,
-          totalLunchSpecial: grandLS,
-          grandTotal,
-          breakfastPrice: bp,
-          lunchPrice: lp,
-          morningSpecialPrice: ms,
-          lunchSpecialPrice: ls,
-        },
+        summary: { totalBreakfast: grandB, totalLunch: grandL, totalMorningSpecial: grandMS, totalLunchSpecial: grandLS, grandTotal, breakfastPrice: bp, lunchPrice: lp, morningSpecialPrice: ms, lunchSpecialPrice: ls },
         details,
       });
     }
@@ -763,28 +518,22 @@ export async function POST(request: NextRequest) {
       );
 
       if (linkedEntry.rows.length > 0) {
-        // MealEntry found — add diff to existing counts + recalc totalBill
+        // MealEntry found — SET to TOTAL values (not incremental)
         const entry = linkedEntry.rows[0] as any;
-        const newB = Number(entry.breakfastCount || 0) + addB;
-        const newL = Number(entry.lunchCount || 0) + addL;
-        const newMS = Number(entry.morningSpecial || 0) + addMS;
-        const newLS = Number(entry.lunchSpecial || 0) + addLS;
         const entryMonth = entry.month || updateMonth;
         const entryYear = entry.year || String(updateYear);
 
-        // entryDate ঠিক করুন — অর্ডারের তারিখ ব্যবহার করুন (পুরাতন ভুল তারিখ থাকলে ঠিক হবে)
-        const existingTimePart = (entry.entryDate || '').substring(11); // "THH:MM:SS.000"
+        const existingTimePart = (entry.entryDate || '').substring(11);
         const correctedEntryDate = `${orderDate}${existingTimePart || 'T00:00:00.000'}`;
 
-        // totalBill রিক্যালকুলেট করুন
         const priceSetting = await db.priceSetting.findUnique({
           where: { month_year: { month: entryMonth, year: entryYear } }
         });
         const bp = priceSetting?.breakfastPrice || 0;
         const lp = priceSetting?.lunchPrice || 0;
-        const ms = priceSetting?.morningSpecial || 0;
-        const ls = priceSetting?.lunchSpecial || 0;
-        const newBill = newB * bp + newL * lp + newMS * ms + newLS * ls;
+        const msp = priceSetting?.morningSpecial || 0;
+        const lsp = priceSetting?.lunchSpecial || 0;
+        const newBill = newBreakfast * bp + newLunch * lp + newMS * msp + newLS * lsp;
 
         await query(
           `UPDATE MealEntry
@@ -794,30 +543,25 @@ export async function POST(request: NextRequest) {
                totalBill = ?, month = ?, year = ?, entryDate = ?
            WHERE id = ?`,
           [
-            newB, newL, newMS, newLS,
+            newBreakfast, newLunch, newMS, newLS,
             name || entry.name, mobile || entry.mobile, designation || entry.designation,
-            newBill, entryMonth, entryYear,
-            correctedEntryDate,
-            entry.id
+            newBill, entryMonth, entryYear, correctedEntryDate, entry.id
           ]
         );
       } else {
-        // No linked MealEntry — create one with sourceOrderId (INCREMENT values, not totals)
+        // No linked MealEntry — create one with TOTAL values
         await createMealEntryForOrder(
           {
             officeId,
             name: name || prev.name,
             mobile: mobile || prev.mobile,
             designation: designation || prev.designation,
-            breakfast: addB,
-            lunch: addL,
-            morningSpecial: addMS,
-            lunchSpecial: addLS,
+            breakfast: newBreakfast,
+            lunch: newLunch,
+            morningSpecial: newMS,
+            lunchSpecial: newLS,
           },
-          prev.id,
-          updateMonth,
-          updateYear,
-          orderDate
+          prev.id, updateMonth, updateYear, orderDate
         );
       }
 
@@ -872,22 +616,21 @@ export async function POST(request: NextRequest) {
     );
     const actualOrderId = actualOrder.rows.length > 0 ? (actualOrder.rows[0] as any).id : id;
 
-    // Create linked MealEntry with sourceOrderId = actual MealOrder id
+    // Create linked MealEntry with ACTUAL MealOrder values (total, not incremental)
+    // This ensures MealEntry matches MealOrder exactly
+    const actual = actualOrder.rows[0] as any;
     await createMealEntryForOrder(
       {
         officeId,
-        name: name || '',
-        mobile: mobile || '',
-        designation: designation || '',
-        breakfast: Number(breakfast || 0),
-        lunch: Number(lunch || 0),
-        morningSpecial: Number(morningSpecial || 0),
-        lunchSpecial: Number(lunchSpecial || 0),
+        name: name || actual.name || '',
+        mobile: mobile || actual.mobile || '',
+        designation: designation || actual.designation || '',
+        breakfast: Number(actual.breakfast || 0),
+        lunch: Number(actual.lunch || 0),
+        morningSpecial: Number(actual.morningSpecial || 0),
+        lunchSpecial: Number(actual.lunchSpecial || 0),
       },
-      actualOrderId,
-      month,
-      year,
-      orderDate
+      actualOrderId, month, year, orderDate
     );
 
     // Recalculate balances for this officeId (non-critical — don't fail the whole request)

@@ -855,16 +855,21 @@ export async function GET(request: NextRequest) {
       } catch { /* silent */ }
 
       const filteredByOffice = allEntries.filter(e => e.officeId.toLowerCase().includes(q));
-      const filteredByMobile = qClean.length > 5 ? allEntries.filter(e => {
-        const mobileClean = e.mobile.replace(/\D/g, '');
+      const filteredByMobile = qClean.length >= 4 ? allEntries.filter(e => {
+        const mobileClean = (e.mobile || '').replace(/\D/g, '');
         const mobileStripped = stripLeadingZeros(mobileClean);
-        return mobileStripped.includes(qClean) || mobileStripped.includes(qStripped);
+        return mobileClean.includes(qClean) || mobileStripped.includes(qClean) || mobileStripped.includes(qStripped) || qStripped.includes(mobileStripped);
       }) : [];
       // Name search
       const filteredByName = q.length >= 2 && !/^\d+$/.test(q) ? allEntries.filter(e => e.name && e.name.toLowerCase().includes(q)) : [];
 
-      // MealEntry তে কিছু না পাওয়া গেলে MealUser/MealOrder থেকে officeId দিয়ে খুঁজুন
-      let allMatchingRaw = filteredByOffice.length > 0 ? filteredByOffice : filteredByMobile.length > 0 ? filteredByMobile : filteredByName;
+      // Use the match with most results (best match), not just first non-empty
+      const matchScores = [
+        { results: filteredByOffice, score: filteredByOffice.length * 10 },
+        { results: filteredByMobile, score: filteredByMobile.length * 5 },
+        { results: filteredByName, score: filteredByName.length * 3 },
+      ].filter(m => m.results.length > 0).sort((a, b) => b.score - a.score);
+      let allMatchingRaw = matchScores.length > 0 ? matchScores[0].results : [];
 
       // MealEntry তে না পাওয়া গেলে কিন্তু MealUser/MealOrder এ পাওয়া গেলে
       if (allMatchingRaw.length === 0 && extraOfficeIds.length > 0) {
