@@ -31,6 +31,8 @@ export async function GET() {
     }
 
     // ৩. প্রতিটি officeId এর জন্য রানিং ব্যালেন্স ক্যালকুলেট
+    // ===== SAME-DAY DEDUP: একই officeId + একই দিনের multiple entry → merge করুন =====
+    // এটি double-counting প্রতিরোধ করে যখন manual entry + order-linked entry একই দিনে থাকে
     const entryMap = new Map<string, Array<{
       officeId: string; name: string; mobile: string; designation: string;
       month: string; year: string; entryDate: Date | string;
@@ -38,25 +40,54 @@ export async function GET() {
       totalBill: number; deposit: number;
     }>>();
 
+    // Dedup map: key = "officeId_dateStr" → already seen?
+    const dedupSeen = new Set<string>();
+
     for (const e of allEntries) {
       const oid = e.officeId;
       if (!oid) continue;
+
+      // ===== DEDUP: same officeId + same date → merge into one entry =====
+      const dateStr = String(e.entryDate || '').substring(0, 10); // "YYYY-MM-DD"
+      const dedupKey = `${oid}_${dateStr}`;
+
       if (!entryMap.has(oid)) entryMap.set(oid, []);
-      entryMap.get(oid)!.push({
-        officeId: oid,
-        name: e.name || '',
-        mobile: e.mobile || '',
-        designation: (e as any).designation || '',
-        month: e.month,
-        year: String(e.year),
-        entryDate: e.entryDate,
-        breakfastCount: Number(e.breakfastCount || 0),
-        lunchCount: Number(e.lunchCount || 0),
-        morningSpecial: Number(e.morningSpecial || 0),
-        lunchSpecial: Number(e.lunchSpecial || 0),
-        totalBill: Number(e.totalBill || 0),
-        deposit: Number(e.deposit || 0),
+
+      const existingArr = entryMap.get(oid)!;
+      const existingIdx = existingArr.findIndex(ex => {
+        const exDateStr = String(ex.entryDate || '').substring(0, 10);
+        return exDateStr === dateStr;
       });
+
+      if (existingIdx >= 0) {
+        // Same-day entry exists → merge counts + deposit (keep higher quality name/mobile/designation)
+        const existing = existingArr[existingIdx];
+        existing.breakfastCount += Number(e.breakfastCount || 0);
+        existing.lunchCount += Number(e.lunchCount || 0);
+        existing.morningSpecial += Number(e.morningSpecial || 0);
+        existing.lunchSpecial += Number(e.lunchSpecial || 0);
+        existing.deposit += Number(e.deposit || 0);
+        // Keep better name/mobile/designation
+        if (!existing.name && e.name) existing.name = e.name || '';
+        if (!existing.mobile || (e.mobile && e.mobile.length > existing.mobile.length)) existing.mobile = e.mobile || '';
+        if (!existing.designation || (e.designation && e.designation.length > existing.designation.length)) existing.designation = e.designation || '';
+      } else {
+        entryMap.get(oid)!.push({
+          officeId: oid,
+          name: e.name || '',
+          mobile: e.mobile || '',
+          designation: (e as any).designation || '',
+          month: e.month,
+          year: String(e.year),
+          entryDate: e.entryDate,
+          breakfastCount: Number(e.breakfastCount || 0),
+          lunchCount: Number(e.lunchCount || 0),
+          morningSpecial: Number(e.morningSpecial || 0),
+          lunchSpecial: Number(e.lunchSpecial || 0),
+          totalBill: Number(e.totalBill || 0),
+          deposit: Number(e.deposit || 0),
+        });
+      }
     }
 
     // ৪. প্রতিটি officeId এর জন্য মোট ব্যালেন্স ক্যালকুলেট

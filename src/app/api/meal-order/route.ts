@@ -126,15 +126,38 @@ async function createMealEntryForOrder(
     const withSource = sameDayEntries.rows.find((e: any) => e.sourceOrderId && e.sourceOrderId.length > 0);
 
     if (withSource) {
+      // ভিন্ন sourceOrderId সহ entry — UPDATE করুন (নতুন entry তৈরি করবেন না)
       const targetEntry = withSource as any;
-      // ভিন্ন sourceOrderId — একই officeId+date এ আরেকটি order-linked MealEntry আছে
-      // আগেরটা যেভাবে আছে রাখুন, নতুন entry তৈরি করুন (নিচে)
+      const newBill = breakfast * bp + lunch * lp + morningSpecial * ms + lunchSpecial * ls;
+      await query(
+        `UPDATE MealEntry
+         SET breakfastCount = ?, lunchCount = ?,
+             morningSpecial = ?, lunchSpecial = ?,
+             totalBill = ?, sourceOrderId = ?, name = ?, mobile = ?, designation = ?
+         WHERE id = ?`,
+        [breakfast, lunch, morningSpecial, lunchSpecial, newBill,
+         sourceOrderId, order.name || targetEntry.name, order.mobile || targetEntry.mobile, order.designation || targetEntry.designation,
+         targetEntry.id]
+      );
+      return;
     }
 
     // ===== MANUAL ENTRY EXISTS but no sourceOrderId entry =====
-    // ম্যানুয়াল entry আলাদা রাখুন — নতুন order entry তৈরি করুন
-    // Display logic (SUM + GROUP BY) উভয় entry যোগ করবে → সঠিক মোট
-    // Fall through to the "No existing entry — create new one" section below
+    // ম্যানুয়াল entry আপডেট করুন — MealOrder এখন source of truth
+    // ম্যানুয়াল entry-তে counts SET করুন (যোগ করবেন না), sourceOrderId যুক্ত করুন
+    const targetEntry = sameDayEntries.rows[0] as any;
+    const newBill = breakfast * bp + lunch * lp + morningSpecial * ms + lunchSpecial * ls;
+    await query(
+      `UPDATE MealEntry
+       SET breakfastCount = ?, lunchCount = ?,
+           morningSpecial = ?, lunchSpecial = ?,
+           totalBill = ?, sourceOrderId = ?, name = ?, mobile = ?, designation = ?
+       WHERE id = ?`,
+      [breakfast, lunch, morningSpecial, lunchSpecial, newBill,
+       sourceOrderId, order.name || targetEntry.name, order.mobile || targetEntry.mobile, order.designation || targetEntry.designation,
+       targetEntry.id]
+    );
+    return;
   }
 
   // No existing entry — create new one
@@ -699,16 +722,8 @@ export async function PUT(request: NextRequest) {
     );
 
     if (linkedEntry.rows.length > 0) {
-      // Update MealEntry counts by adding diff to match new MealOrder + recalc totalBill
+      // Update MealEntry — SET to new MealOrder values directly (not diff-based to avoid drift)
       const entry = linkedEntry.rows[0] as any;
-      const diffB = newB - oldB;
-      const diffL = newL - oldL;
-      const diffMS = newMS - oldMS;
-      const diffLS = newLS - oldLS;
-      const newEntryB = Number(entry.breakfastCount || 0) + diffB;
-      const newEntryL = Number(entry.lunchCount || 0) + diffL;
-      const newEntryMS = Number(entry.morningSpecial || 0) + diffMS;
-      const newEntryLS = Number(entry.lunchSpecial || 0) + diffLS;
 
       // totalBill রিক্যালকুলেট করুন
       const { month: m, year: y } = getBdMonthYear(orderDate);
@@ -719,15 +734,15 @@ export async function PUT(request: NextRequest) {
       const lp = priceSetting?.lunchPrice || 0;
       const ms = priceSetting?.morningSpecial || 0;
       const ls = priceSetting?.lunchSpecial || 0;
-      const newBill = newEntryB * bp + newEntryL * lp + newEntryMS * ms + newEntryLS * ls;
+      const newBill = newB * bp + newL * lp + newMS * ms + newLS * ls;
 
       await query(
         `UPDATE MealEntry
-         SET breakfastCount = breakfastCount + ?, lunchCount = lunchCount + ?,
-             morningSpecial = morningSpecial + ?, lunchSpecial = lunchSpecial + ?,
+         SET breakfastCount = ?, lunchCount = ?,
+             morningSpecial = ?, lunchSpecial = ?,
              totalBill = ?
          WHERE id = ?`,
-        [diffB, diffL, diffMS, diffLS, newBill, entry.id]
+        [newB, newL, newMS, newLS, newBill, entry.id]
       );
     } else {
       // No linked MealEntry (sourceOrderId was cleared from old deadline expiry)
@@ -742,14 +757,6 @@ export async function PUT(request: NextRequest) {
       );
       if (fallbackEntry.rows.length > 0) {
         const entry = fallbackEntry.rows[0] as any;
-        const diffB = newB - oldB;
-        const diffL = newL - oldL;
-        const diffMS = newMS - oldMS;
-        const diffLS = newLS - oldLS;
-        const newEntryB = Number(entry.breakfastCount || 0) + diffB;
-        const newEntryL = Number(entry.lunchCount || 0) + diffL;
-        const newEntryMS = Number(entry.morningSpecial || 0) + diffMS;
-        const newEntryLS = Number(entry.lunchSpecial || 0) + diffLS;
 
         // totalBill রিক্যালকুলেট করুন
         const priceSetting = await db.priceSetting.findUnique({
@@ -759,15 +766,15 @@ export async function PUT(request: NextRequest) {
         const lp = priceSetting?.lunchPrice || 0;
         const ms = priceSetting?.morningSpecial || 0;
         const ls = priceSetting?.lunchSpecial || 0;
-        const newBill = newEntryB * bp + newEntryL * lp + newEntryMS * ms + newEntryLS * ls;
+        const newBill = newB * bp + newL * lp + newMS * ms + newLS * ls;
 
         await query(
           `UPDATE MealEntry
-           SET breakfastCount = breakfastCount + ?, lunchCount = lunchCount + ?,
-               morningSpecial = morningSpecial + ?, lunchSpecial = lunchSpecial + ?,
+           SET breakfastCount = ?, lunchCount = ?,
+               morningSpecial = ?, lunchSpecial = ?,
                totalBill = ?
            WHERE id = ?`,
-          [diffB, diffL, diffMS, diffLS, newBill, entry.id]
+          [newB, newL, newMS, newLS, newBill, entry.id]
         );
         // Re-link the MealEntry to this MealOrder
         await query('UPDATE MealEntry SET sourceOrderId = ? WHERE id = ?', [prev.id, entry.id]);

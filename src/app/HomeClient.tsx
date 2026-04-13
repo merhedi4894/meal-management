@@ -1040,7 +1040,13 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
   };
 
   // Admin মিল অর্ডার প্যানেল খোলার সময় আজকের তারিখ সেট + অটো রিফ্রেশ
+  // ===== One-time duplicate cleanup: existing duplicate entries merge =====
+  const dupCleanedRef = useRef(false);
   useEffect(() => {
+    if (activePanel === 'adminMealOrder' && !dupCleanedRef.current) {
+      dupCleanedRef.current = true;
+      fetch('/api/entries?action=merge_duplicates', { method: 'GET' }).catch(() => {});
+    }
     if (activePanel === 'adminMealOrder' && !amoOrderDate) {
       const now = new Date();
       const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
@@ -1089,7 +1095,7 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
     }
     setDepositInfoLoading(true);
     try {
-      const params = new URLSearchParams({ action: 'search', query: query.trim(), month: depositForm.month, year: depositForm.year });
+      const params = new URLSearchParams({ action: 'search', query: bnToEn(query.trim()), month: depositForm.month, year: depositForm.year });
       const res = await fetch(`/api/entries?${params}`);
       const data = await res.json();
       setDepositInfo(data);
