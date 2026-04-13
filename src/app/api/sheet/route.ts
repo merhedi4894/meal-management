@@ -457,8 +457,8 @@ export async function GET(request: NextRequest) {
             summary.total_lM += parseInt(row['Lunch']) || 0;
             summary.total_mS += parseInt(row['M_Special']) || 0;
             summary.total_lS += parseInt(row['L_Special']) || 0;
-            summary.total_bill += parseFloat(row['Total Bill'] || 0);
-            summary.total_deposit += parseFloat(row['Deposit '] || row['Deposit']) || 0;
+            summary.total_bill += parseFloat(row['Total Bill'] || '0');
+            summary.total_deposit += parseFloat(row['Deposit '] || row['Deposit'] || '0') || 0;
             summary.entryCount++;
           }
         }

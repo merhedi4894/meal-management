@@ -3714,7 +3714,7 @@ th{background:#f0f0f0;font-weight:bold;text-align:center}
                   </div>
                 </div>
                 <div className="flex items-end">
-                  <Button onClick={handleMemberSave} disabled={memberSaving || !memberForm.officeId?.trim() || !memberForm.name?.trim() || !memberForm.mobile?.trim() || !memberForm.designation?.trim() || (memberLookupResult && memberLookupResult.officeId !== '__not_found__')} className="w-full h-8 bg-blue-600 hover:bg-blue-700 gap-1 text-sm">
+                  <Button onClick={handleMemberSave} disabled={memberSaving || !memberForm.officeId?.trim() || !memberForm.name?.trim() || !memberForm.mobile?.trim() || !memberForm.designation?.trim() || !!(memberLookupResult && memberLookupResult.officeId !== '__not_found__')} className="w-full h-8 bg-blue-600 hover:bg-blue-700 gap-1 text-sm">
                     {memberSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <UserPlus className="h-3.5 w-3.5" />}
                     যোগ
                   </Button>
@@ -5384,10 +5384,10 @@ export default function HomeClient() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          officeId: (moSelectedUser || moLoggedInUser).officeId,
-          name: (moSelectedUser || moLoggedInUser).name,
-          mobile: (moSelectedUser || moLoggedInUser).mobile,
-          designation: (moSelectedUser || moLoggedInUser).designation,
+          officeId: (moSelectedUser || moLoggedInUser)!.officeId,
+          name: (moSelectedUser || moLoggedInUser)!.name,
+          mobile: (moSelectedUser || moLoggedInUser)!.mobile,
+          designation: (moSelectedUser || moLoggedInUser)!.designation,
           orderDate: moOrderDate,
           month: MONTHS_NO_ALL[moOrderDateParsed.monthIdx],
           year: moOrderDateParsed.year,
@@ -5408,7 +5408,6 @@ export default function HomeClient() {
         setMoLunchSpecial(0);
         fetchMoOrders();
         fetchMoSummary(moSummaryMonth, moSummaryYear);
-        try { setBalanceLoaded(false); } catch {}
         dispatchMealDataChanged();
       } else {
         moToast({ title: 'এরর', description: data.error, variant: 'destructive' });
@@ -5428,7 +5427,6 @@ export default function HomeClient() {
         try { moToast({ title: 'ডিলিট হয়েছে', description: data.message, variant: 'success' }); } catch {}
         fetchMoOrders();
         fetchMoSummary(moSummaryMonth, moSummaryYear);
-        try { setBalanceLoaded(false); } catch {}
         dispatchMealDataChanged();
       } else {
         moToast({ title: 'এরর', description: data.error, variant: 'destructive' });
@@ -5464,7 +5462,6 @@ export default function HomeClient() {
     const handler = () => {
       fetchMoSummary(moSummaryMonth, moSummaryYear);
       if (mealOrderOpen) fetchMoOrders();
-      try { setBalanceLoaded(false); } catch {}
     };
     window.addEventListener('meal-data-changed', handler);
     return () => window.removeEventListener('meal-data-changed', handler);
@@ -5669,10 +5666,10 @@ export default function HomeClient() {
     setMoLoggedInUser(null);
     setMoSelectedUser(null);
     setMoUserQuery('');
-    setMoBreakfast(false);
-    setMoLunch(false);
-    setMoMorningSpecial(false);
-    setMoLunchSpecial(false);
+    setMoBreakfast(0);
+    setMoLunch(0);
+    setMoMorningSpecial(0);
+    setMoLunchSpecial(0);
   };
 
   // সাইনআপ ফর্মে অফিস আইডি চেক

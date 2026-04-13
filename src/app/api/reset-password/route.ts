@@ -15,7 +15,7 @@ function generateOTP(): string {
 async function getStoredPassword(): Promise<string> {
   try {
     const config = await db.systemSetting.findUnique({ where: { key: 'admin_password' } });
-    if (config && config.value) return config.value;
+    if (config && config.value) return String(config.value);
   } catch { /* টেবিল না থাকলে ডিফল্ট ব্যবহার */ }
   return 'admin123';
 }

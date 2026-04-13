@@ -264,7 +264,7 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const action = searchParams.get('action') || 'all';
-    const query = searchParams.get('query') || '';
+    const searchQuery = searchParams.get('query') || '';
     const field = searchParams.get('field') || '';
     const month = searchParams.get('month') || '';
     const year = searchParams.get('year') || '';
@@ -371,9 +371,9 @@ export async function GET(request: NextRequest) {
 
     // ===== ACTION: SEARCH ENTRIES (ডিলিট ডায়ালগ - Tab 1) =====
     if (action === 'search_entries') {
-      if (!query) return NextResponse.json({ success: false, error: 'আইডি বা মোবাইল দিন' });
+      if (!searchQuery) return NextResponse.json({ success: false, error: 'আইডি বা মোবাইল দিন' });
 
-      const q = query.trim().toLowerCase();
+      const q = searchQuery.trim().toLowerCase();
       const qClean = q.replace(/\D/g, '');
       const qStripped = stripLeadingZeros(qClean);
 
@@ -572,9 +572,9 @@ export async function GET(request: NextRequest) {
 
     // ===== ACTION: LOOKUP =====
     if (action === 'lookup') {
-      if (!query) return NextResponse.json({ success: false, error: 'কোয়েরি দিন' });
+      if (!searchQuery) return NextResponse.json({ success: false, error: 'কোয়েরি দিন' });
 
-      const q = query.trim();
+      const q = searchQuery.trim();
       const qClean = q.replace(/\D/g, '');
 
       const allEntries = await db.mealEntry.findMany({
@@ -769,14 +769,14 @@ export async function GET(request: NextRequest) {
 
     // ===== SUGGEST: নাম/আইডি/মোবাইল টাইপ করলে মিলে যাওয়া সব ইউজার দেখান =====
     if (action === 'suggest') {
-      if (!query || query.length < 2) {
+      if (!searchQuery || searchQuery.length < 2) {
         // designation allows 1 char minimum
-        if (field !== 'designation' || !query || query.length < 1) {
+        if (field !== 'designation' || !searchQuery || searchQuery.length < 1) {
           return NextResponse.json({ success: true, users: [] });
         }
       }
 
-      const q = query.trim().toLowerCase();
+      const q = searchQuery.trim().toLowerCase();
       const qClean = q.replace(/\D/g, '');
 
       const allEntries = await db.mealEntry.findMany({
@@ -884,9 +884,9 @@ export async function GET(request: NextRequest) {
 
     // ===== ACTION: SEARCH =====
     if (action === 'search') {
-      if (!query) return NextResponse.json({ success: false, error: 'আইডি বা মোবাইল দিন' });
+      if (!searchQuery) return NextResponse.json({ success: false, error: 'আইডি বা মোবাইল দিন' });
 
-      const q = query.trim().toLowerCase();
+      const q = searchQuery.trim().toLowerCase();
       const qClean = q.replace(/\D/g, '');
       const qStripped = stripLeadingZeros(qClean);
 
@@ -945,7 +945,7 @@ export async function GET(request: NextRequest) {
 
       // Combine all matches using a Set to avoid duplicates
       const matchedIds = new Set<string>();
-      const allMatchingRaw: typeof allEntries = [];
+      let allMatchingRaw: typeof allEntries = [];
       for (const e of [...matchedByOffice, ...matchedByMobile, ...matchedByName]) {
         if (!matchedIds.has(e.id)) {
           matchedIds.add(e.id);
@@ -962,7 +962,7 @@ export async function GET(request: NextRequest) {
       const allMatching = allMatchingRaw.slice(0, 200);
 
       if (allMatching.length === 0 && extraOfficeIds.length === 0) {
-        return NextResponse.json({ success: false, error: `মিলে নাই: "${query}"` });
+        return NextResponse.json({ success: false, error: `মিলে নাই: "${searchQuery}"` });
       }
 
       // MealUser/MealOrder থেকে পাওয়া extra info ম্যাপ

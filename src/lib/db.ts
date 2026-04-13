@@ -269,6 +269,43 @@ export const db = {
     }
   },
 
+  officeMember: {
+    async findMany(args: any = {}) {
+      const { orderBy, take } = args
+      let sql = 'SELECT * FROM OfficeMember'
+      if (orderBy) sql += ' ORDER BY createdAt DESC'
+      if (take) sql += ` LIMIT ${take}`
+      const result = await query(sql)
+      return result.rows
+    },
+    async findUnique(args: any) {
+      const { officeId } = args.where
+      const result = await query('SELECT * FROM OfficeMember WHERE officeId = ?', [officeId])
+      return result.rows.length > 0 ? result.rows[0] : null
+    },
+    async create(args: any) {
+      const { officeId, name, designation, mobile, department } = args.data
+      await query(
+        'INSERT INTO OfficeMember (officeId, name, designation, mobile, department) VALUES (?, ?, ?, ?, ?)',
+        [officeId, name || '', designation || '', mobile || '', department || '']
+      )
+      return { officeId, name, designation, mobile, department }
+    },
+    async update(args: any) {
+      const { where, data } = args
+      const sets: string[] = []
+      const params: any[] = []
+      for (const [key, val] of Object.entries(data)) {
+        if (val !== undefined) { sets.push(`${key} = ?`); params.push(val) }
+      }
+      if (sets.length > 0) {
+        params.push(where.officeId)
+        await query(`UPDATE OfficeMember SET ${sets.join(', ')} WHERE officeId = ?`, params)
+      }
+      return { ...where, ...data }
+    }
+  },
+
   systemSetting: {
     async findUnique(args: any) {
       const { key } = args.where
