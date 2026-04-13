@@ -370,16 +370,23 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
 
   useEffect(() => { fetchSettings(); }, [fetchSettings]);
 
-  // Auto merge duplicates & recalculate on admin load (ensures data consistency)
+  // Auto merge duplicates & repair data on admin load (ensures data consistency)
   useEffect(() => {
     const cleanup = async () => {
       try {
+        // ডাটা মেরামত: month/year ফিক্স, MealOrder↔MealEntry সিঙ্ক, ফাঁকা entries ডিলিট
+        const res0 = await fetch('/api/entries?action=repair_data');
+        const data0 = await res0.json();
+        if (data0.success) {
+          console.log(`Data repair: ${data0.message}`, data0.results);
+        }
+        // ডুপ্লিকেট মার্জ
         const res = await fetch('/api/entries?action=merge_duplicates');
         const data = await res.json();
         if (data.success && data.mergedCount > 0) {
           console.log(`Auto-merged ${data.mergedCount} duplicate entries`);
         }
-        // Also run full recalculate
+        // ব্যালেন্স রিক্যালকুলেট
         const res2 = await fetch('/api/entries?action=recalculate_all');
         const data2 = await res2.json();
         if (data2.success) {
@@ -4703,6 +4710,12 @@ function SearchSection() {
               <CardTitle className="text-base flex items-center gap-2"><Wallet className="h-5 w-5 text-slate-600" />আর্থিক সামারি</CardTitle>
             </CardHeader>
             <CardContent className="pt-3 space-y-2">
+              {result.priceWarning && (
+                <div className="flex items-start gap-2 p-2 bg-amber-50 rounded-lg border border-amber-300">
+                  <AlertTriangle className="h-3.5 w-3.5 text-amber-600 mt-0.5 shrink-0" />
+                  <p className="text-xs text-amber-700 font-medium">{result.priceWarning}</p>
+                </div>
+              )}
               <div className="flex justify-between items-center p-2 bg-red-50 rounded-lg">
                 <span className="text-xs font-medium text-slate-700">এই মাসের মোট বিল</span>
                 <span className="text-sm font-bold text-red-700">{result.summary.total_bill} টাকা</span>

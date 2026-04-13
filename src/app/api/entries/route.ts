@@ -283,6 +283,77 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: true, message: `${recalcCount} জন কর্মীর ব্যালেন্স রিক্যালকুলেট হয়েছে` });
     }
 
+    // ===== ACTION: REPAIR DATA =====
+    // ১. month/year ফাঁকা থাকলে entryDate থেকে ডেরিভ
+    // ২. MealEntry ↔ MealOrder সিঙ্ক (sourceOrderId, counts)
+    // ৩. অব্যবহৃত ফাঁকা entries (0 meals + 0 deposit) ডিলিট
+    if (action === 'repair_data') {
+      const results = { monthYearFixed: 0, ordersSynced: 0, emptyDeleted: 0 };
+
+      // ১. month/year ফিক্স
+      const allEntries = await query('SELECT id, entryDate, month, year FROM MealEntry');
+      for (const row of allEntries.rows) {
+        const e = row as any;
+        if (!e.entryDate) continue;
+        const dateStr = (e.entryDate || '').substring(0, 10);
+        const dp = dateStr.split('-');
+        if (dp.length !== 3) continue;
+        if (e.month && e.month !== '' && e.year && e.year !== '') continue;
+        const dateObj = new Date(parseInt(dp[0]), parseInt(dp[1]) - 1, parseInt(dp[2]));
+        const fixedMonth = MONTHS_BN[dateObj.getMonth()];
+        const fixedYear = dp[0];
+        await query('UPDATE MealEntry SET month = ?, year = ? WHERE id = ?', [fixedMonth, fixedYear, e.id]);
+        results.monthYearFixed++;
+      }
+
+      // ২. MealOrder ↔ MealEntry সিঙ্ক
+      const allOrders = await query('SELECT id, officeId, orderDate, name, mobile, designation, breakfast, lunch, morningSpecial, lunchSpecial, month, year FROM MealOrder');
+      for (const order of allOrders.rows) {
+        const o = order as any;
+        const orderDateStr = (o.orderDate || '').substring(0, 10);
+
+        // Linked entry খুঁজুন
+        const linked = await query('SELECT id, officeId FROM MealEntry WHERE sourceOrderId = ?', [o.id]);
+        if (linked.rows.length > 0) continue; // Already linked
+
+        // Unlinked entry খুঁজুন (একই officeId + একই দিন)
+        const sameDay = await query(
+          'SELECT id FROM MealEntry WHERE officeId = ? AND substr(entryDate, 1, 10) = ? AND (sourceOrderId IS NULL OR length(sourceOrderId) = 0) ORDER BY rowid ASC LIMIT 1',
+          [o.officeId, orderDateStr]
+        );
+        if (sameDay.rows.length > 0) {
+          const entryId = (sameDay.rows[0] as any).id;
+          // sourceOrderId সেট করুন এবং counts সিঙ্ক করুন
+          await query(
+            'UPDATE MealEntry SET sourceOrderId = ?, breakfastCount = ?, lunchCount = ?, morningSpecial = ?, lunchSpecial = ?, name = COALESCE(NULLIF(?, ""), name), mobile = COALESCE(NULLIF(?, ""), mobile), designation = COALESCE(NULLIF(?, ""), designation) WHERE id = ?',
+            [o.id, Number(o.breakfast) || 0, Number(o.lunch) || 0, Number(o.morningSpecial) || 0, Number(o.lunchSpecial) || 0, o.name || '', o.mobile || '', o.designation || '', entryId]
+          );
+          results.ordersSynced++;
+        }
+      }
+
+      // ৩. ফাঁকা entries ডিলিট (0 meals + 0 deposit + no sourceOrderId or sourceOrderId links to nothing)
+      const emptyEntries = await query(
+        "SELECT id FROM MealEntry WHERE breakfastCount = 0 AND lunchCount = 0 AND morningSpecial = 0 AND lunchSpecial = 0 AND deposit = 0 AND (sourceOrderId IS NULL OR length(sourceOrderId) = 0)"
+      );
+      for (const row of emptyEntries.rows) {
+        try { await query('DELETE FROM MealEntry WHERE id = ?', [(row as any).id]); results.emptyDeleted++; } catch { /* skip */ }
+      }
+
+      // ৪. ব্যালেন্স রিক্যালকুলেট
+      const fixedEntries = await db.mealEntry.findMany({ orderBy: { entryDate: 'asc' } });
+      const officeIds = [...new Set(fixedEntries.map((e: any) => e.officeId))];
+      for (const oid of officeIds) {
+        try { await recalculateAllBalances(oid, db); } catch { /* skip */ }
+      }
+
+      return NextResponse.json({
+        success: true,
+        message: `ডাটা মেরামত: ${results.monthYearFixed}টি month/year ফিক্স, ${results.ordersSynced}টি অর্ডার সিঙ্ক, ${results.emptyDeleted}টি ফাঁকা এন্ট্রি ডিলিট`,
+        results
+      });
+    }
+
     // ===== ACTION: MERGE DUPLICATES =====
     // একই officeId + একই দিনের multiple entry → একটিতে মার্জ + balance recalculate
     if (action === 'merge_duplicates') {
@@ -1145,8 +1216,14 @@ export async function GET(request: NextRequest) {
         }));
       }
 
+      // প্রাইস সেটিং চেক — সব প্রাইস ০ হলে ওয়ার্নিং
+      const hasAnyPrice = allPrices.some((s: any) =>
+        (s.breakfastPrice > 0 || s.lunchPrice > 0 || s.morningSpecial > 0 || s.lunchSpecial > 0)
+      );
+      const priceWarning = !hasAnyPrice ? 'মিলের দাম সেট করা হয়নি। প্রশাসন প্যানেল থেকে দাম সেট করুন।' : '';
+
       return NextResponse.json({
-        success: true, user, summary, prices, allPrices, latestBalance,
+        success: true, user, summary, prices, allPrices, latestBalance, priceWarning,
         entries: filteredWithActivity.reverse().map((e: any) => ({
           ...e,
           entryDate: e.entryDate ? (parseEntryDate(e.entryDate) ? new Date(parseEntryDate(e.entryDate)).toISOString() : String(e.entryDate)) : '',
