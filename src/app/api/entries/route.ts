@@ -891,10 +891,21 @@ export async function GET(request: NextRequest) {
       }
 
       // ===== Dedup: একই officeId + একই দিনের multiple entry থাকলে merge করুন =====
+      // পাশাপাশি month/year খালি থাকলে entryDate থেকে ডেরিভ করুন
       const deduped: any[] = [];
       const seen = new Map<string, number>(); // key: "officeId_dateStr" → index in deduped
       for (const entry of allMatching) {
         const e = entry as any;
+        // ===== month/year অটো-ফিক্স: entryDate থেকে ডেরিভ =====
+        if ((!e.month || e.month === '' || !e.year || e.year === '') && e.entryDate) {
+          const dateStr = (e.entryDate || '').substring(0, 10);
+          const dp = dateStr.split('-');
+          if (dp.length === 3) {
+            const dateObj = new Date(parseInt(dp[0]), parseInt(dp[1]) - 1, parseInt(dp[2]));
+            if (!e.month || e.month === '') e.month = MONTHS_BN[dateObj.getMonth()];
+            if (!e.year || e.year === '') e.year = dp[0];
+          }
+        }
         const dateStr = (e.entryDate || '').substring(0, 10); // "YYYY-MM-DD"
         const key = `${e.officeId}_${dateStr}`;
         if (seen.has(key)) {
@@ -1191,6 +1202,24 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'নাম, মোবাইল বা অফিস আইডি, মাস ও বছর দিন' }, { status: 400 });
     }
 
+    // ===== মাস/বছর অটো-ডিটার্মিন: entryDate থেকে month/year ডেরিভ করুন =====
+    // যদি month/year খালি থাকে বা entryDate থেকে আলাদা হয়, entryDate থেকে ঠিক করুন
+    let finalMonth = month;
+    let finalYear = year;
+    const entryDateForDerive = (body as any).entryDate || depositDate || '';
+    if (entryDateForDerive && entryDateForDerive.length >= 10) {
+      const datePart = entryDateForDerive.substring(0, 10);
+      const dp = datePart.split('-');
+      if (dp.length === 3) {
+        const dateObj = new Date(parseInt(dp[0]), parseInt(dp[1]) - 1, parseInt(dp[2]));
+        const derivedMonth = MONTHS_BN[dateObj.getMonth()];
+        const derivedYear = dp[0];
+        // যদি month খালি হয় বা entryDate থেকে derived month আলাদা হয়
+        if (!finalMonth || finalMonth === '') finalMonth = derivedMonth;
+        if (!finalYear || finalYear === '') finalYear = derivedYear;
+      }
+    }
+
     // মিল কাউন্ট ও জমা parse করুন
     const bC = parseInt(breakfastCount) || 0;
     const lC = parseInt(lunchCount) || 0;
@@ -1199,7 +1228,7 @@ export async function POST(request: NextRequest) {
     const dep = parseInt(deposit) || 0;
 
     const setting = await db.priceSetting.findUnique({
-      where: { month_year: { month, year } }
+      where: { month_year: { month: finalMonth, year: finalYear } }
     });
     const bp = setting?.breakfastPrice || 0;
     const lp = setting?.lunchPrice || 0;
@@ -1246,11 +1275,15 @@ export async function POST(request: NextRequest) {
       const newDep = Number(existing.deposit || 0) + dep;
       const newBill = newB * bp + newL * lp + newMS * ms + newLS * ls;
 
+      // month/year খালি থাকলে সেট করুন
+      const updateMonth = existing.month || finalMonth;
+      const updateYear = existing.year || finalYear;
+
       await query(
         `UPDATE MealEntry SET breakfastCount = ?, lunchCount = ?, morningSpecial = ?, lunchSpecial = ?,
-         totalBill = ?, deposit = ?, depositDate = ?, name = ?, mobile = ?, designation = ?
+         totalBill = ?, deposit = ?, depositDate = ?, name = ?, mobile = ?, designation = ?, month = ?, year = ?
          WHERE id = ?`,
-        [newB, newL, newMS, newLS, newBill, newDep, depositDate || '', name || existing.name, mobile || existing.mobile, (body as any).designation || existing.designation || '', existing.id]
+        [newB, newL, newMS, newLS, newBill, newDep, depositDate || '', name || existing.name, mobile || existing.mobile, (body as any).designation || existing.designation || '', updateMonth, updateYear, existing.id]
       );
       entry = { ...existing, breakfastCount: newB, lunchCount: newL, morningSpecial: newMS, lunchSpecial: newLS, totalBill: newBill, deposit: newDep };
     } else {
@@ -1272,7 +1305,7 @@ export async function POST(request: NextRequest) {
       entry = await db.mealEntry.create({
         data: {
           entryDate: entryDateVal,
-          month, year, officeId: balanceOfficeId,
+          month: finalMonth, year: finalYear, officeId: balanceOfficeId,
           name: name || '',
           mobile: mobile || '',
           breakfastCount: bC, lunchCount: lC, morningSpecial: mS, lunchSpecial: lS,

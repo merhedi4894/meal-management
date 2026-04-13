@@ -149,14 +149,39 @@ async function createMealEntryForOrder(
            order.name || targetEntry.name, order.mobile || targetEntry.mobile, order.designation || targetEntry.designation,
            targetEntry.id]
         );
+        return; // আপডেট হয়েছে, নতুন entry তৈরি করার দরকার নেই
       } else {
         // ভিন্ন sourceOrderId — একই officeId+date এ আরেকটি MealEntry আছে
-        // আগেরটা (manual/sourceOrderId সহ) যেভাবে আছে রাখুন, নতুন entry তৈরি করুন (নিচে)
+        // আগেরটা যেভাবে আছে রাখুন, নতুন entry তৈরি করুন (নিচে)
       }
     }
-    // withSource না পাওয়া গেলে → manual entry আছে (sourceOrderId নেই)
-    // manual entry update করবেন না — নতুন entry তৈরি করুন (নিচে) যাতে GET list এ double-counting না হয়
-    // return করবেন না — নিচে নতুন entry তৈরি হবে
+
+    // ===== MANUAL ENTRY FIX: withSource না পাওয়া গেলে → manual entry আছে (sourceOrderId নেই) =====
+    // manual entry UPDATE করুন — sourceOrderId সেট করুন যাতে GET list তে double-counting না হয়
+    if (!withSource) {
+      const manualEntry = sameDayEntries.rows[0] as any;
+      const newB = Number(manualEntry.breakfastCount || 0) + breakfast;
+      const newL = Number(manualEntry.lunchCount || 0) + lunch;
+      const newMS = Number(manualEntry.morningSpecial || 0) + morningSpecial;
+      const newLS = Number(manualEntry.lunchSpecial || 0) + lunchSpecial;
+      const newBill = newB * bp + newL * lp + newMS * ms + newLS * ls;
+      const entryMonth = manualEntry.month || month;
+      const entryYear = manualEntry.year || String(year);
+
+      await query(
+        `UPDATE MealEntry
+         SET breakfastCount = ?, lunchCount = ?,
+             morningSpecial = ?, lunchSpecial = ?,
+             totalBill = ?, name = ?, mobile = ?, designation = ?,
+             sourceOrderId = ?, month = ?, year = ?
+         WHERE id = ?`,
+        [newB, newL, newMS, newLS, newBill,
+         order.name || manualEntry.name, order.mobile || manualEntry.mobile, order.designation || manualEntry.designation,
+         sourceOrderId, entryMonth, entryYear,
+         manualEntry.id]
+      );
+      return; // manual entry আপডেট হয়েছে, নতুন entry তৈরির দরকার নেই
+    }
   }
 
   // No existing entry — create new one
@@ -308,6 +333,64 @@ export async function GET(request: NextRequest) {
 
       // ===== দুটি সোর্স মার্জ করুন =====
       const mergedMap = new Map<string, any>();
+
+      // ===== সেফটি ডেডুপ: MealEntry যেগুলোর sourceOrderId="" কিন্তু একই তারিখে MealOrder আছে =====
+      // এদের sourceOrderId সেট করুন (একবারই, পরবর্তী রিকোয়েস্টে ঠিক হবে)
+      try {
+        const orphanedEntries = meResult.rows.filter((me: any) => {
+          const oid = (me.officeId || '').trim().toLowerCase();
+          return mergedMap.has(oid); // MealOrder এও আছে → orphaned
+        });
+        if (orphanedEntries.length > 0) {
+          for (const oe of orphanedEntries) {
+            const oeAny = oe as any;
+            const oid = (oeAny.officeId || '').trim();
+            const matchingOrder = moResult.rows.find((mo: any) => (mo.officeId || '').trim().toLowerCase() === oid.trim().toLowerCase());
+            if (matchingOrder) {
+              const moAny = matchingOrder as any;
+              // Manual entry তে MealOrder এর sourceOrderId সেট করুন
+              await query(
+                `UPDATE MealEntry SET sourceOrderId = ?, month = COALESCE(NULLIF(month,''),?), year = COALESCE(NULLIF(CAST(year AS TEXT),''),?)
+                 WHERE officeId = ? AND substr(entryDate,1,10) = ? AND (sourceOrderId IS NULL OR sourceOrderId = '')`,
+                [moAny.id, moAny.month, String(moAny.year), oid, orderDate]
+              );
+            }
+          }
+          // রিফ্রেশ করুন — sourceOrderId আপডেটের পর আবার কুয়েরি করুন
+          const meResult2 = await query(meSql, meParams);
+          // meResult.rows = meResult2.rows; // can't reassign const, but we'll use meResult2 below
+          for (const row of meResult2.rows) {
+            const r = row as any;
+            const oid = (r.officeId || '').trim().toLowerCase();
+            if (!oid) continue;
+            const existing = mergedMap.get(oid);
+            if (existing) {
+              existing.breakfast += Number(r.breakfast) || 0;
+              existing.lunch += Number(r.lunch) || 0;
+              existing.morningSpecial += Number(r.morningSpecial) || 0;
+              existing.lunchSpecial += Number(r.lunchSpecial) || 0;
+              if (!existing.name && r.name) existing.name = r.name;
+              if (!existing.designation && r.designation) existing.designation = r.designation;
+              if (!existing.mobile && r.mobile) existing.mobile = r.mobile;
+            } else {
+              mergedMap.set(oid, {
+                officeId: r.officeId || '', name: r.name || '', mobile: r.mobile || '', designation: r.designation || '',
+                breakfast: Number(r.breakfast) || 0, lunch: Number(r.lunch) || 0,
+                morningSpecial: Number(r.morningSpecial) || 0, lunchSpecial: Number(r.lunchSpecial) || 0,
+              });
+            }
+          }
+          const orders = [...mergedMap.values()]
+            .filter(d => d.breakfast > 0 || d.lunch > 0 || d.morningSpecial > 0 || d.lunchSpecial > 0)
+            .sort((a, b) => a.name.localeCompare(b.name, 'bn'));
+
+          return NextResponse.json({
+            success: true,
+            orders,
+            total: orders.length,
+          });
+        }
+      } catch { /* safety dedup failed — continue with normal merge */ }
       for (const row of moResult.rows) {
         const r = row as any;
         const oid = (r.officeId || '').trim().toLowerCase();
