@@ -379,12 +379,22 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
       if (monthlyMealMonth && monthlyMealYear) handleMonthlyMealSearch();
       // মিল এবং জমা টাকা রিফ্রেশ
       if (delSearchHasSearched && delSearchQuery) handleDelSearch(delSearchPage);
-      // ব্যালেন্স রিফ্রেশ
+      // ব্যালেন্স রিফ্রেশ (ফোর্স রিলোড)
       setBalanceLoaded(false);
+      // বাজার খরচ রিফ্রেশ
+      if (marketExpenseSearchMonth || marketExpenseResults.length > 0) {
+        const meUrl = `/api/market-expense?action=search&month=${marketExpenseSearchMonth}&year=${marketExpenseSearchYear}`;
+        fetch(meUrl).then(r => r.json()).then(d => { if (d.success) { setMarketExpenseResults(d.expenses || []); setMarketExpenseTotal(d.total || 0); } }).catch(() => {});
+      }
+      // স্পেশাল মিল (রান্না) রিফ্রেশ
+      if (rannaCookingDate) fetchRannaCookingView(rannaCookingDate);
+      fetchRannaSettings();
+      // এডিট সেকশন রিফ্রেশ
+      if (hasSearched && filterQuery) fetchEntries(page, filterMonth, filterYear, filterQuery);
     };
     window.addEventListener('meal-data-changed', handler);
     return () => window.removeEventListener('meal-data-changed', handler);
-  }, [amoOrderDate, monthlyMealMonth, monthlyMealYear, delSearchHasSearched, delSearchQuery, delSearchPage]);
+  }, [amoOrderDate, monthlyMealMonth, monthlyMealYear, delSearchHasSearched, delSearchQuery, delSearchPage, hasSearched, filterQuery, filterMonth, filterYear, page, marketExpenseSearchMonth, marketExpenseSearchYear, marketExpenseResults.length, rannaCookingDate]);
 
   const fetchAllForBalance = useCallback(async () => {
     setBalanceLoading(true);
@@ -576,6 +586,7 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
         toast({ title: 'সেভ হয়েছে', description: data.message, variant: 'success' });
         fetchRannaSettings();
         if (rannaCookingDate === rannaDate) fetchRannaCookingView(rannaDate);
+        dispatchMealDataChanged();
       } else {
         toast({ title: 'এরর', description: data.error, variant: 'destructive' });
       }
@@ -639,6 +650,7 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
         toast({ title: 'আপডেট হয়েছে', description: data.message, variant: 'success' });
         setRannaEditOrder(null);
         fetchRannaCookingView(rannaCookingDate);
+        dispatchMealDataChanged();
       } else {
         toast({ title: 'এরর', description: data.error, variant: 'destructive' });
       }
@@ -657,6 +669,7 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
           if (data.success) {
             toast({ title: 'ডিলিট হয়েছে', description: data.message, variant: 'success' });
             fetchRannaCookingView(rannaCookingDate);
+            dispatchMealDataChanged();
           } else {
             toast({ title: 'এরর', description: data.error, variant: 'destructive' });
           }
@@ -677,6 +690,7 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
             toast({ title: 'ডিলিট হয়েছে', description: data.message, variant: 'success' });
             fetchRannaSettings();
             if (rannaCookingDate === orderDate) fetchRannaCookingView(orderDate);
+            dispatchMealDataChanged();
           } else {
             toast({ title: 'এরর', description: data.error, variant: 'destructive' });
           }
@@ -1361,7 +1375,7 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
         body: JSON.stringify({ id: editSetting!.id, ...settingForm })
       });
       const data = await res.json();
-      if (data.success) { toast({ title: 'আপডেট হয়েছে', variant: 'success' }); setEditSetting(null); fetchSettings(); }
+      if (data.success) { toast({ title: 'আপডেট হয়েছে', variant: 'success' }); setEditSetting(null); fetchSettings(); dispatchMealDataChanged(); }
     } catch { toast({ title: 'এরর', variant: 'destructive' }); }
     finally { setEditLoading(false); }
   };
@@ -1374,7 +1388,7 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
         try {
           const res = await fetch(`/api/settings?id=${id}`, { method: 'DELETE' });
           const data = await res.json();
-          if (data.success) { toast({ title: 'ডিলিট হয়েছে', variant: 'success' }); fetchSettings(); }
+          if (data.success) { toast({ title: 'ডিলিট হয়েছে', variant: 'success' }); fetchSettings(); dispatchMealDataChanged(); }
         } catch { toast({ title: 'এরর', variant: 'destructive' }); }
       }
     });
@@ -1388,7 +1402,7 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
         body: JSON.stringify(newSettingForm)
       });
       const data = await res.json();
-      if (data.success) { toast({ title: 'সেভ হয়েছে', variant: 'success' }); setNewSettingOpen(false); setNewSettingForm({}); fetchSettings(); }
+      if (data.success) { toast({ title: 'সেভ হয়েছে', variant: 'success' }); setNewSettingOpen(false); setNewSettingForm({}); fetchSettings(); dispatchMealDataChanged(); }
       else toast({ title: 'এরর', description: data.error, variant: 'destructive' });
     } catch { toast({ title: 'এরর', variant: 'destructive' }); }
   };
@@ -1870,12 +1884,12 @@ th{background:#f0f0f0;font-weight:bold;text-align:center}
     }
   };
 
-  // ===== Load balance data when switching to balance panels =====
+  // ===== Load balance data when needed =====
   useEffect(() => {
-    if ((activePanel === 'dueAmounts' || activePanel === 'advanceAmounts') && !balanceLoaded) {
+    if (!balanceLoaded) {
       fetchAllForBalance();
     }
-  }, [activePanel, balanceLoaded, fetchAllForBalance]);
+  }, [balanceLoaded, fetchAllForBalance]);
 
   // ===== Panel buttons config — গ্রুপ ও স্বাধীন বাটন =====
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ meal: true, deposit: false, market: false });
