@@ -1,45 +1,67 @@
-import { Resend } from 'resend';
+import nodemailer from 'nodemailer';
 
-// Resend API Key (no app password needed — just an API key from resend.com)
-let resendClient: Resend | null = null;
+// ===== Gmail SMTP Configuration =====
+// এনভায়রনমেন্ট ভ্যারিয়েবল থেকে সেটিংস নেওয়া হয়
+// GMAIL_USER, GMAIL_APP_PASSWORD সেট করলে Gmail দিয়ে ইমেইল পাঠানো যাবে
 
-function getResendClient(): Resend | null {
-  if (!process.env.RESEND_API_KEY) {
-    console.error('[Email] RESEND_API_KEY .env তে সেট করা নেই');
+let transporter: nodemailer.Transporter | null = null;
+
+function getTransporter(): nodemailer.Transporter | null {
+  if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
+    console.error('[Email] Gmail SMTP কনফিগারেশন পাওয়া যায়নি। GMAIL_USER, GMAIL_APP_PASSWORD সেট করুন।');
     return null;
   }
-  if (!resendClient) {
-    resendClient = new Resend(process.env.RESEND_API_KEY);
+  if (!transporter) {
+    transporter = nodemailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 587,
+      secure: false,
+      auth: {
+        user: process.env.GMAIL_USER,
+        pass: process.env.GMAIL_APP_PASSWORD,
+      },
+      connectionTimeout: 10000,
+      greetingTimeout: 5000,
+      socketTimeout: 10000,
+    });
+
+    transporter.verify((error) => {
+      if (error) {
+        console.error('[Email] SMTP কানেকশন ত্রুটি:', error.message);
+        transporter = null;
+      } else {
+        console.log('[Email] Gmail SMTP সাথে সংযোগ সফল');
+      }
+    });
   }
-  return resendClient;
+  return transporter;
 }
 
-// ইমেইল পাঠানোর সোর্স (Resend দিয়ে ভেরিফাইড ডোমেইন বা onboarding)
 function getFromEmail(): string {
-  // ইউজার যদি কাস্টম ইমেইল সেট করে থাকে
   if (process.env.EMAIL_FROM) return process.env.EMAIL_FROM;
-  // ডিফল্ট: Resend onboarding (ডোমেইন ভেরিফিকেশন ছাড়াই কাজ করে)
-  return 'Meal Management <onboarding@resend.dev>';
+  if (process.env.GMAIL_USER) return process.env.GMAIL_USER;
+  return 'noreply@gmail.com';
 }
 
-// OTP ইমেইল পাঠান (Resend — app password লাগবে না)
+// ===== OTP ইমেইল পাঠানোর ফাংশন =====
 export async function sendOTPEmail(to: string, otp: string): Promise<{ success: boolean; error?: string; testOtp?: string }> {
-  const resend = getResendClient();
+  const transport = getTransporter();
 
-  if (!resend) {
-    // RESEND_API_KEY না থাকলে — টেস্ট মোডে OTP ফেরত দিন
-    console.log(`[Email] RESEND_API_KEY নেই — টেস্ট OTP: ${otp}`);
+  if (!transport) {
+    // SMTP কনফিগারেশন না থাকলে — টেস্ট মোডে OTP ফেরত দিন
+    console.log(`[Email] SMTP কনফিগ নেই — টেস্ট OTP: ${otp}`);
     return {
       success: true,
       testOtp: otp,
-      error: 'RESEND_API_KEY সেট করা নেই। টেস্ট OTP রেসপন্সে দেওয়া হলো।'
+      error: 'Gmail SMTP কনফিগারেশন সেট করা নেই। টেস্ট OTP রেসপন্সে দেওয়া হলো।'
     };
   }
 
   try {
-    const { data, error } = await resend.emails.send({
-      from: getFromEmail(),
-      to: [to],
+    const fromEmail = getFromEmail();
+    const info = await transport.sendMail({
+      from: `"মিল ম্যানেজমেন্ট" <${fromEmail}>`,
+      to: to,
       subject: '🔐 পাসওয়ার্ড রিসেট - ভেরিফিকেশন কোড',
       html: `
         <div style="font-family: 'Segoe UI', Tahoma, sans-serif; max-width: 420px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 12px; background: #f9fafb;">
@@ -64,16 +86,11 @@ export async function sendOTPEmail(to: string, otp: string): Promise<{ success: 
       `
     });
 
-    if (error) {
-      console.error('[Resend] ইমেইল পাঠাতে ব্যর্থ:', error);
-      return { success: false, error: error.message };
-    }
-
-    console.log('[Resend] OTP পাঠানো হয়েছে:', data?.id);
+    console.log('[Email] OTP সফলভাবে পাঠানো হয়েছে:', info.messageId, '→', to);
     return { success: true };
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : 'Unknown error';
-    console.error('[Resend] পাঠাতে ব্যর্থ:', msg);
+    console.error('[Email] পাঠাতে ব্যর্থ:', msg);
     return { success: false, error: msg };
   }
 }
