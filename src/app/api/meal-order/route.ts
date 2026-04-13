@@ -125,49 +125,38 @@ async function createMealEntryForOrder(
   );
 
   if (sameDayEntries.rows.length > 0) {
-    // একই দিনের entry আছে → sourceOrderId আছে এমন entry খুঁজুন (না থাকলে যেকোনোটা)
+    // একই দিনের entry আছে → sourceOrderId আছে এমন entry খুঁজুন
     const withSource = sameDayEntries.rows.find((e: any) => e.sourceOrderId && e.sourceOrderId.length > 0);
-    const targetEntry = (withSource || sameDayEntries.rows[sameDayEntries.rows.length - 1]) as any;
 
-    // একই sourceOrderId দিয়ে আগে থেকেই linked entry আছে কিনা চেক করুন
-    if (targetEntry.sourceOrderId && targetEntry.sourceOrderId === sourceOrderId) {
-      // একই order — counts যোগ করুন
-      const newB = Number(targetEntry.breakfastCount || 0) + breakfast;
-      const newL = Number(targetEntry.lunchCount || 0) + lunch;
-      const newMS = Number(targetEntry.morningSpecial || 0) + morningSpecial;
-      const newLS = Number(targetEntry.lunchSpecial || 0) + lunchSpecial;
-      const newBill = newB * bp + newL * lp + newMS * ms + newLS * ls;
+    if (withSource) {
+      const targetEntry = withSource as any;
+      // একই sourceOrderId দিয়ে আগে থেকেই linked entry আছে কিনা চেক করুন
+      if (targetEntry.sourceOrderId === sourceOrderId) {
+        // একই order — counts যোগ করুন
+        const newB = Number(targetEntry.breakfastCount || 0) + breakfast;
+        const newL = Number(targetEntry.lunchCount || 0) + lunch;
+        const newMS = Number(targetEntry.morningSpecial || 0) + morningSpecial;
+        const newLS = Number(targetEntry.lunchSpecial || 0) + lunchSpecial;
+        const newBill = newB * bp + newL * lp + newMS * ms + newLS * ls;
 
-      await query(
-        `UPDATE MealEntry
-         SET breakfastCount = ?, lunchCount = ?,
-             morningSpecial = ?, lunchSpecial = ?,
-             totalBill = ?, name = ?, mobile = ?, designation = ?
-         WHERE id = ?`,
-        [newB, newL, newMS, newLS, newBill,
-         order.name || targetEntry.name, order.mobile || targetEntry.mobile, order.designation || targetEntry.designation,
-         targetEntry.id]
-      );
-    } else {
-      // ভিন্ন sourceOrderId — counts যোগ করুন, sourceOrderId ওভাররাইট করবে না
-      const newB = Number(targetEntry.breakfastCount || 0) + breakfast;
-      const newL = Number(targetEntry.lunchCount || 0) + lunch;
-      const newMS = Number(targetEntry.morningSpecial || 0) + morningSpecial;
-      const newLS = Number(targetEntry.lunchSpecial || 0) + lunchSpecial;
-      const newBill = newB * bp + newL * lp + newMS * ms + newLS * ls;
-
-      await query(
-        `UPDATE MealEntry
-         SET breakfastCount = ?, lunchCount = ?,
-             morningSpecial = ?, lunchSpecial = ?,
-             totalBill = ?, name = ?, mobile = ?, designation = ?
-         WHERE id = ?`,
-        [newB, newL, newMS, newLS, newBill,
-         order.name || targetEntry.name, order.mobile || targetEntry.mobile, order.designation || targetEntry.designation,
-         targetEntry.id]
-      );
+        await query(
+          `UPDATE MealEntry
+           SET breakfastCount = ?, lunchCount = ?,
+               morningSpecial = ?, lunchSpecial = ?,
+               totalBill = ?, name = ?, mobile = ?, designation = ?
+           WHERE id = ?`,
+          [newB, newL, newMS, newLS, newBill,
+           order.name || targetEntry.name, order.mobile || targetEntry.mobile, order.designation || targetEntry.designation,
+           targetEntry.id]
+        );
+      } else {
+        // ভিন্ন sourceOrderId — একই officeId+date এ আরেকটি MealEntry আছে
+        // আগেরটা (manual/sourceOrderId সহ) যেভাবে আছে রাখুন, নতুন entry তৈরি করুন (নিচে)
+      }
     }
-    return;
+    // withSource না পাওয়া গেলে → manual entry আছে (sourceOrderId নেই)
+    // manual entry update করবেন না — নতুন entry তৈরি করুন (নিচে) যাতে GET list এ double-counting না হয়
+    // return করবেন না — নিচে নতুন entry তৈরি হবে
   }
 
   // No existing entry — create new one

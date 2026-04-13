@@ -808,13 +808,52 @@ export async function GET(request: NextRequest) {
 
       const q = query.trim().toLowerCase();
       const qClean = q.replace(/\D/g, '');
+      const qStripped = stripLeadingZeros(qClean);
 
+      // ===== সব সোর্স থেকে সার্চ করুন: MealEntry + MealUser + MealOrder =====
       // Get all entries and filter manually for mobile matching with stripped zeros
       const allEntries = await db.mealEntry.findMany({
         orderBy: { entryDate: 'asc' }
       });
 
-      const qStripped = stripLeadingZeros(qClean);
+      // MealUser এবং MealOrder থেকেও officeId পাওয়ার চেষ্টা করুন
+      let extraOfficeIds: Array<{ officeId: string; name: string; mobile: string; designation: string }> = [];
+      try {
+        const mealUsers = await query('SELECT officeId, name, mobile, designation FROM MealUser');
+        for (const row of mealUsers.rows) {
+          const r = row as any;
+          if (!r.officeId) continue;
+          let matched = false;
+          if (r.officeId.toLowerCase().includes(q)) matched = true;
+          if (!matched && r.name && r.name.toLowerCase().includes(q)) matched = true;
+          if (!matched && qClean.length >= 4 && r.mobile) {
+            const mobileClean = r.mobile.replace(/\D/g, '');
+            const mobileStripped = stripLeadingZeros(mobileClean);
+            if (mobileStripped.includes(qClean) || mobileStripped.includes(qStripped) || qStripped.includes(mobileStripped)) matched = true;
+          }
+          if (matched) extraOfficeIds.push({ officeId: r.officeId, name: r.name || '', mobile: r.mobile || '', designation: r.designation || '' });
+        }
+      } catch { /* silent */ }
+      try {
+        const mealOrders = await query('SELECT DISTINCT officeId, name, mobile, designation FROM MealOrder');
+        for (const row of mealOrders.rows) {
+          const r = row as any;
+          if (!r.officeId) continue;
+          let matched = false;
+          if (r.officeId.toLowerCase().includes(q)) matched = true;
+          if (!matched && r.name && r.name.toLowerCase().includes(q)) matched = true;
+          if (!matched && qClean.length >= 4 && r.mobile) {
+            const mobileClean = r.mobile.replace(/\D/g, '');
+            const mobileStripped = stripLeadingZeros(mobileClean);
+            if (mobileStripped.includes(qClean) || mobileStripped.includes(qStripped) || qStripped.includes(mobileStripped)) matched = true;
+          }
+          if (matched) {
+            const exists = extraOfficeIds.find(e => e.officeId.toLowerCase() === r.officeId.toLowerCase());
+            if (!exists) extraOfficeIds.push({ officeId: r.officeId, name: r.name || '', mobile: r.mobile || '', designation: r.designation || '' });
+          }
+        }
+      } catch { /* silent */ }
+
       const filteredByOffice = allEntries.filter(e => e.officeId.toLowerCase().includes(q));
       const filteredByMobile = qClean.length > 5 ? allEntries.filter(e => {
         const mobileClean = e.mobile.replace(/\D/g, '');
@@ -824,13 +863,31 @@ export async function GET(request: NextRequest) {
       // Name search
       const filteredByName = q.length >= 2 && !/^\d+$/.test(q) ? allEntries.filter(e => e.name && e.name.toLowerCase().includes(q)) : [];
 
-      // Limit search results to 100 entries max
-      const allMatchingRaw = filteredByOffice.length > 0 ? filteredByOffice : filteredByMobile.length > 0 ? filteredByMobile : filteredByName;
+      // MealEntry তে কিছু না পাওয়া গেলে MealUser/MealOrder থেকে officeId দিয়ে খুঁজুন
+      let allMatchingRaw = filteredByOffice.length > 0 ? filteredByOffice : filteredByMobile.length > 0 ? filteredByMobile : filteredByName;
+
+      // MealEntry তে না পাওয়া গেলে কিন্তু MealUser/MealOrder এ পাওয়া গেলে
+      if (allMatchingRaw.length === 0 && extraOfficeIds.length > 0) {
+        const targetOid = extraOfficeIds[0].officeId;
+        allMatchingRaw = allEntries.filter(e => e.officeId && e.officeId.toLowerCase() === targetOid.toLowerCase());
+      }
 
       const allMatching = allMatchingRaw.slice(0, 200);
 
-      if (allMatching.length === 0) {
+      if (allMatching.length === 0 && extraOfficeIds.length === 0) {
         return NextResponse.json({ success: false, error: `মিলে নাই: "${query}"` });
+      }
+
+      // MealUser/MealOrder থেকে পাওয়া extra info ম্যাপ
+      const extraMap = new Map<string, { name: string; mobile: string; designation: string }>();
+      for (const e of extraOfficeIds) {
+        const key = e.officeId.toLowerCase();
+        const existing = extraMap.get(key);
+        const score = e.name.length + e.mobile.length + e.designation.length * 2;
+        const existingScore = existing ? (existing.name.length + existing.mobile.length + existing.designation.length * 2) : 0;
+        if (!existing || score > existingScore) {
+          extraMap.set(key, { name: e.name, mobile: e.mobile, designation: e.designation });
+        }
       }
 
       // ===== Dedup: একই officeId + একই দিনের multiple entry থাকলে merge করুন =====
@@ -860,14 +917,17 @@ export async function GET(request: NextRequest) {
         }
       }
 
-      // Get unique user info from deduped
+      // Get unique user info from deduped + extraMap (MealUser/MealOrder)
       const firstNamed = deduped.find(e => e.name);
       const firstWithDesignation = deduped.find(e => (e as any).designation);
+      const firstWithMobile = deduped.find(e => e.mobile && e.mobile.length >= 5);
+      const oidLower = deduped.length > 0 ? (deduped[0].officeId || '').toLowerCase() : '';
+      const extraInfo = oidLower ? extraMap.get(oidLower) : null;
       const user = {
-        id: deduped[0].officeId,
-        name: firstNamed?.name || '',
-        mobile: deduped.find(e => e.mobile)?.mobile || '',
-        designation: (firstWithDesignation as any)?.designation || firstNamed && (firstNamed as any).designation || ''
+        id: deduped.length > 0 ? deduped[0].officeId : (extraOfficeIds.length > 0 ? extraOfficeIds[0].officeId : ''),
+        name: firstNamed?.name || extraInfo?.name || '',
+        mobile: firstWithMobile?.mobile || extraInfo?.mobile || deduped.find(e => e.mobile)?.mobile || '',
+        designation: (firstWithDesignation as any)?.designation || extraInfo?.designation || (firstNamed as any)?.designation || ''
       };
 
       // Latest balance — সকল মাসের এন্ট্রি থেকে অন-দ্য-ফ্লাই ক্যালকুলেট
