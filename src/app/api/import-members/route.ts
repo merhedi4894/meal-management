@@ -323,8 +323,10 @@ export async function POST(request: NextRequest) {
     let created = 0;
     let updated = 0;
     let skipped = 0;
+    let duplicates = 0;
     const errors: string[] = [];
     const details: Array<{ officeId: string; name: string; action: string }> = [];
+    const processedInBatch = new Set<string>(); // একই ব্যাচে duplicate officeId ট্র্যাক করুন
 
     // ডাটাবেজে আগে থেকে থাকা officeId গুলো একবারে আনা (db helper ব্যবহার)
     const allEntries = await db.mealEntry.findMany({ orderBy: { entryDate: 'desc' } });
@@ -359,8 +361,15 @@ export async function POST(request: NextRequest) {
         continue;
       }
 
+      // একই ব্যাচে duplicate officeId চেক — আগেই প্রসেস হয়ে থাকলে skip
+      const oidKey = officeId.toLowerCase();
+      if (processedInBatch.has(oidKey)) {
+        duplicates++;
+        continue;
+      }
+
       try {
-        const existing = existingMap.get(officeId.toLowerCase());
+        const existing = existingMap.get(oidKey);
 
         if (existing) {
           // ===== আপডেট: officeId আছে → নাম, পদবী, মোবাইল আপডেট (সব entry তে) =====
@@ -376,12 +385,13 @@ export async function POST(request: NextRequest) {
             });
           }
 
-          existingMap.set(officeId.toLowerCase(), {
+          existingMap.set(oidKey, {
             name: name || existing.name,
             mobile: mobile || existing.mobile,
             designation: designation || existing.designation,
           });
 
+          processedInBatch.add(oidKey);
           updated++;
           details.push({ officeId, name: name || existing.name, action: 'আপডেট' });
         } else {
@@ -406,7 +416,8 @@ export async function POST(request: NextRequest) {
             }
           });
 
-          existingMap.set(officeId.toLowerCase(), { name, mobile, designation });
+          existingMap.set(oidKey, { name, mobile, designation });
+          processedInBatch.add(oidKey);
           created++;
           details.push({ officeId, name, action: 'নতুন যোগ' });
         }
@@ -426,7 +437,7 @@ export async function POST(request: NextRequest) {
       skipped,
       errors: errors.slice(0, 20),
       details: details.slice(0, 50),
-      message: `সম্পন্ন: ${created}টি নতুন সদস্য যোগ, ${updated}টি আপডেট, ${skipped}টি বাদ`,
+      message: `সম্পন্ন: ${created}টি নতুন সদস্য যোগ, ${updated}টি আপডেট, ${duplicates}টি ডুপ্লিকেট বাদ, ${skipped}টি ত্রুটি`,
     });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
