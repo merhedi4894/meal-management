@@ -251,7 +251,7 @@ async function exportDataSheet(month: string, year: string) {
   // Header row
   addHeaderRow(ws, headers, '4472C4');
 
-  // Data rows — skip entries where ALL optional values are zero/empty
+  // Data rows — skip entries where ALL 8 optional values are zero/empty
   let tB = 0, tL = 0, tMS = 0, tLS = 0, tBill = 0, tDep = 0;
   let serial = 1;
   for (let i = 0; i < entries.length; i++) {
@@ -265,8 +265,12 @@ async function exportDataSheet(month: string, year: string) {
     const prevB = Number(e.prevBalance) || 0;
     const curB = Number(e.curBalance) || 0;
 
-    // Skip row if ALL meal counts, bill, deposit, balances are zero and no deposit date
-    if (rB === 0 && rL === 0 && rMS === 0 && rLS === 0 && bill === 0 && dep === 0 && prevB === 0 && curB === 0 && !e.depositDate) continue;
+    // Check if depositDate has a meaningful value (Date object or non-empty string)
+    const hasDate = e.depositDate && String(e.depositDate).trim() !== '' && String(e.depositDate) !== 'null';
+
+    // Skip row only if ALL 8 fields are zero/empty:
+    // সকাল নাস্তা, দুপুর মিল, সকাল স্পেশাল, দুপুর স্পেশাল, মোট বিল, জমা, জমার তারিখ, বর্তমান ব্যালেন্স
+    if (rB === 0 && rL === 0 && rMS === 0 && rLS === 0 && bill === 0 && dep === 0 && curB === 0 && !hasDate) continue;
 
     tB += rB; tL += rL; tMS += rMS; tLS += rLS; tBill += bill; tDep += dep;
 
