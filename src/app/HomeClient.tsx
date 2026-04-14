@@ -370,32 +370,8 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
 
   useEffect(() => { fetchSettings(); }, [fetchSettings]);
 
-  // Auto merge duplicates & repair data on admin load (ensures data consistency)
-  useEffect(() => {
-    const cleanup = async () => {
-      try {
-        // ডাটা মেরামত: month/year ফিক্স, MealOrder↔MealEntry সিঙ্ক, ফাঁকা entries ডিলিট
-        const res0 = await fetch('/api/entries?action=repair_data');
-        const data0 = await res0.json();
-        if (data0.success) {
-          console.log(`Data repair: ${data0.message}`, data0.results);
-        }
-        // ডুপ্লিকেট মার্জ
-        const res = await fetch('/api/entries?action=merge_duplicates');
-        const data = await res.json();
-        if (data.success && data.mergedCount > 0) {
-          console.log(`Auto-merged ${data.mergedCount} duplicate entries`);
-        }
-        // ব্যালেন্স রিক্যালকুলেট
-        const res2 = await fetch('/api/entries?action=recalculate_all');
-        const data2 = await res2.json();
-        if (data2.success) {
-          console.log(`Recalculated balances: ${data2.message}`);
-        }
-      } catch { /* silent — admin page still works */ }
-    };
-    cleanup();
-  }, []);
+  // Auto merge duplicates & repair data — এখন ম্যানুয়ালি চালাতে হবে (অটো রান বন্ধ)
+  // repair_data ইম্পোর্ট করা মেম্বার এন্ট্রি মুছে ফেলতে পারে তাই অটো থেকে বন্ধ রাখা হয়েছে
 
   // ===== Global auto-refresh: যেকোনো ডাটা পরিবর্তন হলে সব সেকশন রিফ্রেশ =====
   useEffect(() => {

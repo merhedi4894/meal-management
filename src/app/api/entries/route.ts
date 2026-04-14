@@ -332,13 +332,28 @@ export async function GET(request: NextRequest) {
         }
       }
 
-      // ৩. ফাঁকা entries ডিলিট — কিন্তু ইম্পোর্ট করা মেম্বার (যাদের নাম/officeId আছে) রাখুন
+      // ৩. ফাঁকা entries ডিলিট — শুধুমাত্র সম্পূর্ণ ফাঁকা এন্ট্রি (নাম ও officeId দুটিই নেই)
+      // ⚠️ কোনো মেম্বার এন্ট্রি ডিলিট হবে না
       const emptyEntries = await query(
         "SELECT id FROM MealEntry WHERE breakfastCount = 0 AND lunchCount = 0 AND morningSpecial = 0 AND lunchSpecial = 0 AND deposit = 0 AND (sourceOrderId IS NULL OR length(sourceOrderId) = 0) AND (name IS NULL OR name = '') AND (officeId IS NULL OR officeId = '')"
       );
+      let deletedCount = 0;
       for (const row of emptyEntries.rows) {
-        try { await query('DELETE FROM MealEntry WHERE id = ?', [(row as any).id]); results.emptyDeleted++; } catch { /* skip */ }
+        try {
+          // ডাবল চেক: শুধুমাত্র যাদের সত্যিই কোনো ডাটা নেই
+          const entry = await query('SELECT name, officeId FROM MealEntry WHERE id = ?', [(row as any).id]);
+          if (entry.rows.length > 0) {
+            const e = entry.rows[0] as any;
+            const hasName = e.name && e.name.trim().length > 0;
+            const hasOid = e.officeId && e.officeId.trim().length > 0;
+            if (!hasName && !hasOid) {
+              await query('DELETE FROM MealEntry WHERE id = ?', [(row as any).id]);
+              deletedCount++;
+            }
+          }
+        } catch { /* skip */ }
       }
+      results.emptyDeleted = deletedCount;
 
       // ৪. ব্যালেন্স রিক্যালকুলেট
       const fixedEntries = await db.mealEntry.findMany({ orderBy: { entryDate: 'asc' } });
