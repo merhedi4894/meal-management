@@ -84,7 +84,7 @@ export async function GET(request: NextRequest) {
 
       // Search MealUser
       const userResult = await query(
-        'SELECT officeId, name, mobile, designation FROM MealUser WHERE LOWER(officeId) LIKE ? OR LOWER(name) LIKE ? OR mobile LIKE ? OR LOWER(designation) LIKE ? LIMIT 20',
+        'SELECT officeId, name, mobile, designation FROM MealUser WHERE LOWER(officeId) LIKE ? OR LOWER(name) LIKE ? OR mobile LIKE ? OR LOWER(designation) LIKE ?',
         [`%${qLower}%`, `%${qLower}%`, `%${q}%`, `%${qLower}%`]
       );
       for (const row of userResult.rows) {
@@ -100,13 +100,12 @@ export async function GET(request: NextRequest) {
             designation: (r.designation || '').trim(),
           });
         }
-        if (userMap.size >= 10) break;
       }
 
       // Search MealEntry (for existing users who aren't in MealUser)
-      if (userMap.size < 10) {
+      {
         const entryResult = await query(
-          "SELECT DISTINCT officeId, name, mobile, designation FROM MealEntry WHERE officeId != '' AND (LOWER(officeId) LIKE ? OR LOWER(name) LIKE ? OR mobile LIKE ? OR LOWER(designation) LIKE ?) LIMIT 20",
+          "SELECT DISTINCT officeId, name, mobile, designation FROM MealEntry WHERE officeId != '' AND (LOWER(officeId) LIKE ? OR LOWER(name) LIKE ? OR mobile LIKE ? OR LOWER(designation) LIKE ?)",
           [`%${qLower}%`, `%${qLower}%`, `%${q}%`, `%${qLower}%`]
         );
         for (const row of entryResult.rows) {
@@ -122,7 +121,6 @@ export async function GET(request: NextRequest) {
               designation: (r.designation || '').trim(),
             });
           }
-          if (userMap.size >= 10) break;
         }
       }
 

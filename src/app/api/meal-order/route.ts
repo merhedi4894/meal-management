@@ -392,7 +392,7 @@ export async function GET(request: NextRequest) {
         sql += " OR mobile LIKE ?";
         params.push(mobileStrippedPattern);
       }
-      sql += ") LIMIT 20";
+      sql += ")";
 
       try {
         const result = await query(sql, params);
@@ -418,7 +418,7 @@ export async function GET(request: NextRequest) {
           userSql += " OR mobile LIKE ?";
           uParams.push(mobileStrippedPattern);
         }
-        userSql += ") LIMIT 20";
+        userSql += ")";
 
         const userResult = await query(userSql, uParams);
         for (const row of userResult.rows) {

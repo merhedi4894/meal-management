@@ -676,7 +676,7 @@ export async function GET(request: NextRequest) {
           sql += " OR LOWER(name) LIKE ?";
           params.push(likePattern);
         }
-        sql += ") LIMIT 10";
+        sql += ")";
 
         const result = await query(sql, params);
         for (const row of result.rows) {
@@ -711,7 +711,7 @@ export async function GET(request: NextRequest) {
           userSql += " OR LOWER(name) LIKE ?";
           uParams.push(likePattern);
         }
-        userSql += ") LIMIT 10";
+        userSql += ")";
 
         const userResult = await query(userSql, uParams);
         for (const row of userResult.rows) {
@@ -737,7 +737,7 @@ export async function GET(request: NextRequest) {
         return NextResponse.json({ success: false, error: 'কোনো তথ্য পাওয়া যায়নি' });
       }
 
-      let users = [...userMap.values()].slice(0, 5);
+      let users = [...userMap.values()];
 
       // মোবাইল নম্বর মিসিং হলে MealEntry থেকে ভরান
       for (const u of users) {
@@ -931,7 +931,7 @@ export async function GET(request: NextRequest) {
           }
         }
       }
-      sql += ") LIMIT 30";
+      sql += ")";
 
       try {
         const result = await query(sql, params);
@@ -989,7 +989,7 @@ export async function GET(request: NextRequest) {
             }
           }
         }
-        userSql += ") LIMIT 30";
+        userSql += ")";
 
         const userResult = await query(userSql, uParams);
         for (const row of userResult.rows) {
@@ -1133,7 +1133,7 @@ export async function GET(request: NextRequest) {
         allMatchingRaw = allEntries.filter(e => e.officeId && e.officeId.toLowerCase() === targetOid.toLowerCase());
       }
 
-      const allMatching = allMatchingRaw.slice(0, 200);
+      const allMatching = allMatchingRaw;
 
       if (allMatching.length === 0 && extraOfficeIds.length === 0) {
         return NextResponse.json({ success: false, error: `মিলে নাই: "${searchQuery}"` });
