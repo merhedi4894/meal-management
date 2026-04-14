@@ -81,16 +81,17 @@ export async function GET(request: NextRequest) {
 
       const qLower = q.toLowerCase();
       const likePattern = `%${qLower}%`;
+      const qClean = q.replace(/\D/g, '');
+      const mobilePattern = qClean.length >= 3 ? `%${qClean}%` : '';
       const userMap = new Map<string, { officeId: string; name: string; mobile: string; designation: string }>();
 
-      // Helper: unique key generator
       const makeKey = (oid: string, name: string, mobile: string) => {
-        if (oid) return oid.toLowerCase();
-        const mobilePart = mobile ? `_${mobile.replace(/\D/g, '')}` : '';
-        return `_${name.toLowerCase()}${mobilePart}`;
+        if (oid) return `oid:${oid.toLowerCase()}`;
+        const mobileClean = (mobile || '').replace(/\D/g, '');
+        if (name && mobileClean.length >= 5) return `nm:${name.toLowerCase()}_${mobileClean}`;
+        return `n:${name.toLowerCase()}`;
       };
 
-      // Helper: best data merger
       const mergeUser = (existing: { officeId: string; name: string; mobile: string; designation: string }, newRow: { officeId: string; name: string; mobile: string; designation: string }) => {
         if (!existing.name && newRow.name) existing.name = newRow.name;
         if (!existing.officeId && newRow.officeId) existing.officeId = newRow.officeId;
@@ -102,35 +103,42 @@ export async function GET(request: NextRequest) {
         }
       };
 
-      // ✅ সব ফিল্ডে সার্চ — officeId + name + mobile + designation
+      // ✅ DISTINCT দিয়ে SQL লেভেলে ডুপ্লিকেট এড়ানো
       const searchTables = ['MealUser', 'MealEntry', 'MealOrder'];
       for (const table of searchTables) {
         try {
-          const result = await query(
-            `SELECT officeId, name, mobile, designation FROM ${table} WHERE LOWER(officeId) LIKE ? OR LOWER(name) LIKE ? OR mobile LIKE ? OR LOWER(designation) LIKE ?`,
-            [likePattern, likePattern, likePattern, likePattern]
-          );
+          let sql = `SELECT DISTINCT officeId, name, mobile, designation FROM ${table} WHERE LOWER(officeId) LIKE ? OR LOWER(name) LIKE ? OR LOWER(designation) LIKE ?`;
+          const params: string[] = [likePattern, likePattern, likePattern];
+          if (mobilePattern) {
+            sql += ' OR mobile LIKE ?';
+            params.push(mobilePattern);
+          }
+          const result = await query(sql, params);
           for (const row of result.rows) {
             const r = row as any;
             const oid = (r.officeId || '').trim();
             const rName = (r.name || '').trim();
             if (!oid && !rName) continue;
-            const key = makeKey(oid, rName, (r.mobile || '').trim());
+            const rMobile = (r.mobile || '').trim();
+            const key = makeKey(oid, rName, rMobile);
             if (!userMap.has(key)) {
               userMap.set(key, {
                 officeId: oid,
                 name: rName,
-                mobile: (r.mobile || '').trim(),
+                mobile: rMobile,
                 designation: (r.designation || '').trim(),
               });
             } else {
-              mergeUser(userMap.get(key)!, { officeId: oid, name: rName, mobile: (r.mobile || '').trim(), designation: (r.designation || '').trim() });
+              mergeUser(userMap.get(key)!, { officeId: oid, name: rName, mobile: rMobile, designation: (r.designation || '').trim() });
             }
           }
-        } catch { /* silent */ }
+        } catch (err) {
+          console.error(`[suggest] ${table} search error:`, err);
+        }
       }
 
-      return NextResponse.json({ success: true, users: [...userMap.values()] });
+      const users = [...userMap.values()].sort((a, b) => (a.name || '').localeCompare(b.name || '', 'bn'));
+      return NextResponse.json({ success: true, users });
     }
 
     return NextResponse.json({ success: false, error: 'Invalid action' });

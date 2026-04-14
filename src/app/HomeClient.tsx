@@ -1893,12 +1893,17 @@ th{background:#f0f0f0;font-weight:bold;text-align:center}
     }
   };
 
-  // ===== Load balance data when needed =====
+  // ===== Load balance data when needed + প্যানেল খোলার সময় রিফ্রেশ =====
   useEffect(() => {
-    if (!balanceLoaded) {
+    fetchAllForBalance();
+  }, [fetchAllForBalance]);
+
+  // বকেয়া/অগ্রিম প্যানেল খোলার সময় রিফ্রেশ
+  useEffect(() => {
+    if (activePanel === 'dueAmounts' || activePanel === 'advanceAmounts') {
       fetchAllForBalance();
     }
-  }, [balanceLoaded, fetchAllForBalance]);
+  }, [activePanel, fetchAllForBalance]);
 
   // ===== Panel buttons config — গ্রুপ ও স্বাধীন বাটন =====
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ meal: true, deposit: false, market: false });

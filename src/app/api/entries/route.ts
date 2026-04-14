@@ -908,8 +908,8 @@ export async function GET(request: NextRequest) {
     }
 
     // ===== SUGGEST: নাম/আইডি/মোবাইল টাইপ করলে মিলে যাওয়া সব ইউজার দেখান =====
-    // ✅ সব ফিল্ডে সার্চ — কোনো field restriction নেই
-    // ✅ একই নাম থাকলে সবাই দেখাবে (officeId অনুযায়ী dedup)
+    // ✅ DISTINCT দিয়ে SQL লেভেলে ইউনিক
+    // ✅ একই নাম থাকলে সবাই দেখাবে (officeId/name+mobile অনুযায়ী dedup)
     // ✅ MealEntry + MealUser + MealOrder তিন টেবিল থেকে খুঁজে
     if (action === 'suggest') {
       if (!searchQuery) {
@@ -931,24 +931,20 @@ export async function GET(request: NextRequest) {
       const qStripped = stripLeadingZeros(qClean);
       const mobileStrippedPattern = qStripped !== qClean && qStripped.length >= 3 ? `%${qStripped}%` : '';
 
-      // Dedup: designation field → designation value, others → officeId
-      // ✅ officeId না থাকলে officeId + name + mobile দিয়ে unique key বানান
       const dedupByDesignation = isDesigField;
       const userMap = new Map<string, { officeId: string; name: string; mobile: string; designation: string }>();
 
-      // Helper: unique key generator — officeId থাকলে officeId, না থাকলে name+mobile
+      // ✅ উন্নত dedup key — composite key (officeId / name+mobile)
       const makeKey = (oid: string, name: string, mobile: string, isDesig: boolean, desig: string) => {
         if (isDesig) {
           return (desig || `_${oid || name}`).toLowerCase();
         }
-        // officeId থাকলে officeId দিয়ে dedup
-        if (oid) return oid.toLowerCase();
-        // officeId না থাকলে name + mobile দিয়ে dedup (দুইজন একই নামে থাকলে আলাদা হবে)
-        const mobilePart = mobile ? `_${mobile.replace(/\D/g, '')}` : '';
-        return `_${name.toLowerCase()}${mobilePart}`;
+        if (oid) return `oid:${oid.toLowerCase()}`;
+        const mobileClean = (mobile || '').replace(/\D/g, '');
+        if (name && mobileClean.length >= 5) return `nm:${name.toLowerCase()}_${mobileClean}`;
+        return `n:${name.toLowerCase()}`;
       };
 
-      // Helper: best data picker — existing আর new মিলিয়ে সেরা data বানান
       const mergeUser = (existing: { officeId: string; name: string; mobile: string; designation: string }, newRow: { officeId: string; name: string; mobile: string; designation: string }) => {
         if (!existing.name && newRow.name) existing.name = newRow.name;
         if (!existing.officeId && newRow.officeId) existing.officeId = newRow.officeId;
@@ -960,17 +956,15 @@ export async function GET(request: NextRequest) {
         }
       };
 
-      // ===== সব ফিল্ডে সার্চ করুন — field parameter ignore, সব জায়গায় খুঁজবে =====
+      // ✅ DISTINCT দিয়ে SQL লেভেলে ডুপ্লিকেট এড়ানো
       const buildSearchSql = (tableName: string) => {
-        let sql = `SELECT officeId, name, mobile, designation FROM ${tableName} WHERE (`;
+        let sql = `SELECT DISTINCT officeId, name, mobile, designation FROM ${tableName} WHERE (`;
         const params: string[] = [];
 
         if (isDesigField) {
-          // পদবী দিয়ে সার্চ → designation + name ও খুঁজুন
           sql += "LOWER(designation) LIKE ? OR LOWER(name) LIKE ?";
           params.push(likePattern, likePattern);
         } else {
-          // সব ফিল্ডে সার্চ (officeId, name, mobile, designation)
           sql += "LOWER(officeId) LIKE ? OR LOWER(name) LIKE ? OR LOWER(designation) LIKE ?";
           params.push(likePattern, likePattern, likePattern);
           if (mobilePattern) {
@@ -986,74 +980,49 @@ export async function GET(request: NextRequest) {
         return { sql, params };
       };
 
-      // ১. MealEntry থেকে খুঁজুন
+      const processRows = (rows: any[]) => {
+        for (const row of rows) {
+          const r = row as any;
+          const oid = (r.officeId || '').trim();
+          const rName = (r.name || '').trim();
+          if (!oid && !rName) continue;
+          const rMobile = (r.mobile || '').trim();
+          const rDesig = (r.designation || '').trim();
+          const key = makeKey(oid, rName, rMobile, dedupByDesignation, rDesig);
+          if (!userMap.has(key)) {
+            userMap.set(key, { officeId: oid, name: rName, mobile: rMobile, designation: rDesig });
+          } else {
+            mergeUser(userMap.get(key)!, { officeId: oid, name: rName, mobile: rMobile, designation: rDesig });
+          }
+        }
+      };
+
+      // ১. MealEntry থেকে খুঁজুন (সব ইম্পোর্টেড মেম্বার + মিল এন্ট্রি)
       try {
         const { sql, params } = buildSearchSql('MealEntry');
         const result = await query(sql, params);
-        for (const row of result.rows) {
-          const r = row as any;
-          const oid = (r.officeId || '').trim();
-          const rName = (r.name || '').trim();
-          const rMobile = (r.mobile || '').trim();
-          const rDesig = (r.designation || '').trim();
+        processRows(result.rows);
+      } catch (err) {
+        console.error('[suggest] MealEntry search error:', err);
+      }
 
-          if (!oid && !rName) continue; // কোনো data না থাকলে skip
-
-          const key = makeKey(oid, rName, rMobile, dedupByDesignation, rDesig);
-
-          if (!userMap.has(key)) {
-            userMap.set(key, { officeId: oid, name: rName, mobile: rMobile, designation: rDesig });
-          } else {
-            mergeUser(userMap.get(key)!, { officeId: oid, name: rName, mobile: rMobile, designation: rDesig });
-          }
-        }
-      } catch { /* silent */ }
-
-      // ২. MealUser থেকেও খুঁজুন
+      // ২. MealUser থেকেও খুঁজুন (রেজিস্টার্ড ইউজার)
       try {
         const { sql, params } = buildSearchSql('MealUser');
         const userResult = await query(sql, params);
-        for (const row of userResult.rows) {
-          const r = row as any;
-          const oid = (r.officeId || '').trim();
-          const rName = (r.name || '').trim();
-          const rMobile = (r.mobile || '').trim();
-          const rDesig = (r.designation || '').trim();
-
-          if (!oid && !rName) continue;
-
-          const key = makeKey(oid, rName, rMobile, dedupByDesignation, rDesig);
-
-          if (!userMap.has(key)) {
-            userMap.set(key, { officeId: oid, name: rName, mobile: rMobile, designation: rDesig });
-          } else {
-            mergeUser(userMap.get(key)!, { officeId: oid, name: rName, mobile: rMobile, designation: rDesig });
-          }
-        }
-      } catch { /* silent */ }
+        processRows(userResult.rows);
+      } catch (err) {
+        console.error('[suggest] MealUser search error:', err);
+      }
 
       // ৩. MealOrder থেকেও খুঁজুন (অর্ডার দেওয়া সব ইউজার)
       try {
         const { sql, params } = buildSearchSql('MealOrder');
         const orderResult = await query(sql, params);
-        for (const row of orderResult.rows) {
-          const r = row as any;
-          const oid = (r.officeId || '').trim();
-          const rName = (r.name || '').trim();
-          const rMobile = (r.mobile || '').trim();
-          const rDesig = (r.designation || '').trim();
-
-          if (!oid && !rName) continue;
-
-          const key = makeKey(oid, rName, rMobile, dedupByDesignation, rDesig);
-
-          if (!userMap.has(key)) {
-            userMap.set(key, { officeId: oid, name: rName, mobile: rMobile, designation: rDesig });
-          } else {
-            mergeUser(userMap.get(key)!, { officeId: oid, name: rName, mobile: rMobile, designation: rDesig });
-          }
-        }
-      } catch { /* silent */ }
+        processRows(orderResult.rows);
+      } catch (err) {
+        console.error('[suggest] MealOrder search error:', err);
+      }
 
       let users = [...userMap.values()];
 
@@ -1068,12 +1037,13 @@ export async function GET(request: NextRequest) {
             if (fillerRows.rows.length > 0) {
               u.mobile = (fillerRows.rows[0] as any).mobile;
             }
-          } catch { /* silent */ }
+          } catch { /* skip */ }
         }
-        // পদবী মিসিং হলে MealUser ও MealOrder থেকে ভরান
+        // পদবী মিসিং হলে সব টেবিল থেকে ভরান
         if (!u.designation || u.designation.length === 0) {
           try {
             const tables = [
+              'SELECT designation FROM MealEntry WHERE officeId = ? AND designation IS NOT NULL AND designation != \'\' LIMIT 1',
               'SELECT designation FROM MealUser WHERE officeId = ? AND designation IS NOT NULL AND designation != \'\' LIMIT 1',
               'SELECT designation FROM MealOrder WHERE officeId = ? AND designation IS NOT NULL AND designation != \'\' LIMIT 1',
             ];
@@ -1085,10 +1055,11 @@ export async function GET(request: NextRequest) {
                 break;
               }
             }
-          } catch { /* silent */ }
+          } catch { /* skip */ }
         }
       }
 
+      users.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'bn'));
       return NextResponse.json({ success: true, users });
     }
 
