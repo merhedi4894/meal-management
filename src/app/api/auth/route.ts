@@ -80,48 +80,47 @@ export async function GET(request: NextRequest) {
       }
 
       const qLower = q.toLowerCase();
+      const likePattern = `%${qLower}%`;
       const userMap = new Map<string, { officeId: string; name: string; mobile: string; designation: string }>();
 
-      // Search MealUser
-      const userResult = await query(
-        'SELECT officeId, name, mobile, designation FROM MealUser WHERE LOWER(officeId) LIKE ? OR LOWER(name) LIKE ? OR mobile LIKE ? OR LOWER(designation) LIKE ?',
-        [`%${qLower}%`, `%${qLower}%`, `%${q}%`, `%${qLower}%`]
-      );
-      for (const row of userResult.rows) {
-        const r = row as any;
-        const oid = (r.officeId || '').trim();
-        if (!oid) continue;
-        const key = oid.toLowerCase();
-        if (!userMap.has(key)) {
-          userMap.set(key, {
-            officeId: oid,
-            name: (r.name || '').trim(),
-            mobile: (r.mobile || '').trim(),
-            designation: (r.designation || '').trim(),
-          });
+      // Helper: best data merger
+      const mergeUser = (existing: { officeId: string; name: string; mobile: string; designation: string }, newRow: { officeId: string; name: string; mobile: string; designation: string }) => {
+        if (!existing.name && newRow.name) existing.name = newRow.name;
+        if (!existing.officeId && newRow.officeId) existing.officeId = newRow.officeId;
+        if ((!existing.mobile || existing.mobile.length < 5) && newRow.mobile && newRow.mobile.length >= 5) {
+          existing.mobile = newRow.mobile;
         }
-      }
+        if ((!existing.designation || existing.designation.length === 0) && newRow.designation && newRow.designation.length > 0) {
+          existing.designation = newRow.designation;
+        }
+      };
 
-      // Search MealEntry (for existing users who aren't in MealUser)
-      {
-        const entryResult = await query(
-          "SELECT DISTINCT officeId, name, mobile, designation FROM MealEntry WHERE officeId != '' AND (LOWER(officeId) LIKE ? OR LOWER(name) LIKE ? OR mobile LIKE ? OR LOWER(designation) LIKE ?)",
-          [`%${qLower}%`, `%${qLower}%`, `%${q}%`, `%${qLower}%`]
-        );
-        for (const row of entryResult.rows) {
-          const r = row as any;
-          const oid = (r.officeId || '').trim();
-          if (!oid) continue;
-          const key = oid.toLowerCase();
-          if (!userMap.has(key)) {
-            userMap.set(key, {
-              officeId: oid,
-              name: (r.name || '').trim(),
-              mobile: (r.mobile || '').trim(),
-              designation: (r.designation || '').trim(),
-            });
+      // ✅ সব ফিল্ডে সার্চ — officeId + name + mobile + designation
+      const searchTables = ['MealUser', 'MealEntry', 'MealOrder'];
+      for (const table of searchTables) {
+        try {
+          const result = await query(
+            `SELECT officeId, name, mobile, designation FROM ${table} WHERE LOWER(officeId) LIKE ? OR LOWER(name) LIKE ? OR mobile LIKE ? OR LOWER(designation) LIKE ?`,
+            [likePattern, likePattern, likePattern, likePattern]
+          );
+          for (const row of result.rows) {
+            const r = row as any;
+            const oid = (r.officeId || '').trim();
+            const rName = (r.name || '').trim();
+            if (!oid && !rName) continue;
+            const key = (oid || `_${rName}`).toLowerCase();
+            if (!userMap.has(key)) {
+              userMap.set(key, {
+                officeId: oid,
+                name: rName,
+                mobile: (r.mobile || '').trim(),
+                designation: (r.designation || '').trim(),
+              });
+            } else {
+              mergeUser(userMap.get(key)!, { officeId: oid, name: rName, mobile: (r.mobile || '').trim(), designation: (r.designation || '').trim() });
+            }
           }
-        }
+        } catch { /* silent */ }
       }
 
       return NextResponse.json({ success: true, users: [...userMap.values()] });
