@@ -51,6 +51,21 @@ function getBDISOString(): string {
 }
 
 // entryDate পার্স করার হেল্পার — epoch number ও ISO string দুই ফরম্যাটই handle করে
+// বাংলাদেশ সময়ে YYYY-MM-DD ফরম্যাটে রূপান্তর (toISOString() UTC তে দেয় তাই এটা ব্যবহার করা হবে)
+function entryDateToBD(d: any): string {
+  if (!d) return '';
+  const epoch = parseEntryDate(d);
+  if (!epoch) return String(d);
+  const utcDate = new Date(epoch);
+  // Convert UTC to Bangladesh time (GMT+6)
+  const utcMs = utcDate.getTime();
+  const bdMs = utcMs + 6 * 60 * 60000;
+  const bd = new Date(bdMs);
+  const yyyy = bd.getUTCFullYear();
+  const mm = String(bd.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(bd.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
 function parseEntryDate(d: any): number {
   if (!d) return 0;
   if (typeof d === 'number') return d;
@@ -587,7 +602,7 @@ export async function GET(request: NextRequest) {
 
       return NextResponse.json({
         success: true,
-        entries: paginated,
+        entries: paginated.map((e: any) => ({ ...e, entryDate: entryDateToBD(e.entryDate) })),
         total,
         page,
         totalPages: Math.ceil(total / limit)
@@ -1339,7 +1354,7 @@ export async function GET(request: NextRequest) {
         success: true, user, summary, prices, allPrices, latestBalance, priceWarning,
         entries: filteredWithActivity.reverse().map((e: any) => ({
           ...e,
-          entryDate: e.entryDate ? (parseEntryDate(e.entryDate) ? new Date(parseEntryDate(e.entryDate)).toISOString() : String(e.entryDate)) : '',
+          entryDate: entryDateToBD(e.entryDate),
           prevBalance: Number(e.prevBalance) || 0,
           curBalance: Number(e.curBalance) || 0,
           totalBill: Number(e.calculatedBill) || 0,
@@ -1432,7 +1447,9 @@ export async function GET(request: NextRequest) {
         const paginated = filtered.slice((page - 1) * limit, page * limit);
 
         return NextResponse.json({
-          success: true, entries: paginated, total,
+          success: true,
+          entries: paginated.map((e: any) => ({ ...e, entryDate: entryDateToBD(e.entryDate) })),
+          total,
           page, totalPages: Math.ceil(total / limit)
         });
       }
@@ -1456,7 +1473,9 @@ export async function GET(request: NextRequest) {
     });
 
     return NextResponse.json({
-      success: true, entries, total,
+      success: true,
+      entries: entries.map((e: any) => ({ ...e, entryDate: entryDateToBD(e.entryDate) })),
+      total,
       page, totalPages: Math.ceil(total / limit)
     });
   } catch (error: unknown) {
