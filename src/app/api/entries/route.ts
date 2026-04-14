@@ -859,8 +859,8 @@ export async function GET(request: NextRequest) {
       // ===== ২. MealOrder টেবিলে খুঁজুন =====
       try {
         const orderResult = await query('SELECT officeId, name, mobile, designation FROM MealOrder WHERE officeId IS NOT NULL AND officeId != \'\'');
-        if (orderResult && Array.isArray(orderResult) && orderResult.length > 0) {
-          const rows = orderResult as any[];
+        if (orderResult && orderResult.rows && orderResult.rows.length > 0) {
+          const rows = orderResult.rows as any[];
           // অফিস আইডি দিয়ে ম্যাচ
           if (checkOfficeId) {
             const matches = rows.filter(r => r.officeId && r.officeId.trim().toLowerCase() === checkOfficeId.trim().toLowerCase());
@@ -883,8 +883,8 @@ export async function GET(request: NextRequest) {
       // ===== ৩. MealUser টেবিলে খুঁজুন =====
       try {
         const userResult = await query('SELECT officeId, name, mobile, designation FROM MealUser WHERE officeId IS NOT NULL AND officeId != \'\'');
-        if (userResult && Array.isArray(userResult) && userResult.length > 0) {
-          const rows = userResult as any[];
+        if (userResult && userResult.rows && userResult.rows.length > 0) {
+          const rows = userResult.rows as any[];
           // অফিস আইডি দিয়ে ম্যাচ
           if (checkOfficeId) {
             const matches = rows.filter(r => r.officeId && r.officeId.trim().toLowerCase() === checkOfficeId.trim().toLowerCase());

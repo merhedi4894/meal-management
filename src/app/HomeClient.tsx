@@ -797,15 +797,20 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
   };
 
   // ===== নাম সাজেশন (অটোকমপ্লিট) =====
-  const suggestTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  // ✅ প্রতিটি ফর্মের জন্য আলাদা timer — race condition এড়ানো
+  const mealSuggestTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const depositSuggestTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const memberSuggestTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const editSuggestTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   // সাজেশন সিলেক্ট হলে blur lookup স্কিপ করতে ফ্ল্যাগ
   const justSelectedRef = useRef(false);
 
-  const fetchSuggestions = (value: string, field: string, setSuggestions: (s: LookupUser[]) => void, setOpen: (o: boolean) => void) => {
-    clearTimeout(suggestTimerRef.current);
+  const fetchSuggestions = (value: string, field: string, setSuggestions: (s: LookupUser[]) => void, setOpen: (o: boolean) => void, timerRef?: React.MutableRefObject<ReturnType<typeof setTimeout> | undefined>) => {
+    const timer = timerRef || { current: undefined };
+    clearTimeout(timer.current);
     if (!value || (field !== 'designation' && value.length < 2)) { setSuggestions([]); setOpen(false); return; }
     if (field === 'designation' && value.length < 1) { setSuggestions([]); setOpen(false); return; }
-    suggestTimerRef.current = setTimeout(async () => {
+    timer.current = setTimeout(async () => {
       try {
         const res = await fetch(`/api/entries?action=suggest&query=${encodeURIComponent(bnToEn(value))}&field=${encodeURIComponent(field)}`);
         const data = await res.json();
@@ -844,11 +849,11 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
     // নাম, আইডি, মোবাইল বা পদবী টাইপ করলে সাজেশন আনুন
     if (key === 'name' || key === 'officeId' || key === 'mobile') {
       setMealSuggestField(key);
-      fetchSuggestions(value, key, setMealSuggestions, setMealSuggestOpen);
+      fetchSuggestions(value, key, setMealSuggestions, setMealSuggestOpen, mealSuggestTimerRef);
     }
     if (key === 'designation') {
       setMealSuggestField('designation');
-      fetchSuggestions(value, 'designation', setMealSuggestions, setMealSuggestOpen);
+      fetchSuggestions(value, 'designation', setMealSuggestions, setMealSuggestOpen, mealSuggestTimerRef);
     }
   };
   const handleMealFieldBlur = (key: string) => {
@@ -1051,11 +1056,11 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
     setDepositForm(prev => ({ ...prev, [key]: value }));
     if (key === 'name' || key === 'officeId' || key === 'mobile') {
       setDepositSuggestField(key);
-      fetchSuggestions(value, key, setDepositSuggestions, setDepositSuggestOpen);
+      fetchSuggestions(value, key, setDepositSuggestions, setDepositSuggestOpen, depositSuggestTimerRef);
     }
     if (key === 'designation') {
       setDepositSuggestField('designation');
-      fetchSuggestions(value, 'designation', setDepositSuggestions, setDepositSuggestOpen);
+      fetchSuggestions(value, 'designation', setDepositSuggestions, setDepositSuggestOpen, depositSuggestTimerRef);
     }
   };
   const handleDepositFieldBlur = (key: string) => {
@@ -1134,11 +1139,11 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
     // অফিস আইডি, নাম, মোবাইল বা পদবী টাইপ করলে সাজেশন আনুন
     if (key === 'officeId' || key === 'name' || key === 'mobile') {
       setMemberSuggestField(key);
-      fetchSuggestions(value, key, setMemberSuggestions, setMemberSuggestOpen);
+      fetchSuggestions(value, key, setMemberSuggestions, setMemberSuggestOpen, memberSuggestTimerRef);
     }
     if (key === 'designation') {
       setMemberSuggestField('designation');
-      fetchSuggestions(value, 'designation', setMemberSuggestions, setMemberSuggestOpen);
+      fetchSuggestions(value, 'designation', setMemberSuggestions, setMemberSuggestOpen, memberSuggestTimerRef);
     }
   };
   const handleMemberFieldBlur = (key: string) => {
