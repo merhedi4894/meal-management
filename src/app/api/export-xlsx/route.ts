@@ -379,7 +379,14 @@ async function exportBalanceSheet(balType: string) {
       runningBalance = runningBalance + entry.deposit - bill;
       tB += entry.breakfastCount; tL += entry.lunchCount; tBill += bill; tDep += entry.deposit;
     }
-    balanceList.push({ officeId: oid, name: sorted[0].name, mobile: sorted[0].mobile, designation: sorted[0].designation, totalBreakfast: tB, totalLunch: tL, totalBill: tBill, totalDeposit: tDep, curBalance: runningBalance });
+    // সেরা name/mobile/designation বের করুন (সব entry থেকে longest non-empty)
+    let bName = sorted[0].name || '', bMobile = sorted[0].mobile || '', bDesig = sorted[0].designation || '';
+    for (const entry of sorted) {
+      if (entry.name && entry.name.length > bName.length) bName = entry.name;
+      if (entry.mobile && entry.mobile.length > bMobile.length) bMobile = entry.mobile;
+      if (entry.designation && entry.designation.length > bDesig.length) bDesig = entry.designation;
+    }
+    balanceList.push({ officeId: oid, name: bName, mobile: bMobile, designation: bDesig, totalBreakfast: tB, totalLunch: tL, totalBill: tBill, totalDeposit: tDep, curBalance: runningBalance });
   }
 
   const isDue = balType === 'due';

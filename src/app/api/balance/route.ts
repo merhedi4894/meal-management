@@ -131,11 +131,20 @@ export async function GET() {
         runningBalance = runningBalance + entry.deposit - bill;
       }
 
+      // সেরা name/mobile/designation বের করুন (সব entry থেকে longest non-empty)
+      let bestName = first.name || '';
+      let bestMobile = first.mobile || '';
+      let bestDesignation = first.designation || '';
+      for (const entry of sorted) {
+        if (entry.name && entry.name.length > bestName.length) bestName = entry.name;
+        if (entry.mobile && entry.mobile.length > bestMobile.length) bestMobile = entry.mobile;
+        if (entry.designation && entry.designation.length > bestDesignation.length) bestDesignation = entry.designation;
+      }
       balanceMap.set(oid, {
         officeId: oid,
-        name: first.name,
-        mobile: first.mobile,
-        designation: first.designation,
+        name: bestName,
+        mobile: bestMobile,
+        designation: bestDesignation,
         curBalance: runningBalance,
       });
     }
