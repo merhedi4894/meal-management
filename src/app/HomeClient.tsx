@@ -1172,7 +1172,26 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
         const res = await fetch(`/api/entries?${params.toString()}`);
         const data = await res.json();
         if (data.success && data.duplicate && data.user) {
-          setMemberLookupResult(data.user);
+          const matchedUser = data.user;
+          setMemberLookupResult(matchedUser);
+          // অটো-ফিল: ম্যাচ পাওয়া গেলে ফর্ম ফিল্ডগুলো ভরে দিন
+          // (duplicate ব্লক করার আগে ইউজারকে দেখানো হবে কী পরিবর্তন হয়েছে)
+          setMemberForm(prev => {
+            const updated = { ...prev };
+            if (matchedUser.officeId && (!updated.officeId || updated.officeId.trim() === '')) {
+              updated.officeId = matchedUser.officeId;
+            }
+            if (matchedUser.name && (!updated.name || updated.name.trim() === '')) {
+              updated.name = matchedUser.name;
+            }
+            if (matchedUser.mobile && (!updated.mobile || updated.mobile.trim() === '')) {
+              updated.mobile = matchedUser.mobile;
+            }
+            if (matchedUser.designation && (!updated.designation || updated.designation.trim() === '')) {
+              updated.designation = matchedUser.designation;
+            }
+            return updated;
+          });
         } else {
           setMemberLookupResult(null);
         }

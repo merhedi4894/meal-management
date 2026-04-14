@@ -54,13 +54,15 @@ export async function GET() {
       // ===== month/year অটো-ফিক্স: entryDate থেকে ডেরিভ (homepage এর মতো) =====
       let entryMonth = e.month || '';
       let entryYear = e.year || '';
-      if ((!entryMonth || entryMonth === '' || !entryYear || entryYear === '') && e.entryDate) {
+      const needMonthFix = !entryMonth || entryMonth === '' || !MONTHS_BN.includes(entryMonth);
+      const needYearFix = !entryYear || entryYear === '';
+      if ((needMonthFix || needYearFix) && e.entryDate) {
         const dateStr = String(e.entryDate || '').substring(0, 10);
         const dp = dateStr.split('-');
         if (dp.length === 3) {
           const dateObj = new Date(parseInt(dp[0]), parseInt(dp[1]) - 1, parseInt(dp[2]));
-          if (!entryMonth || entryMonth === '') entryMonth = MONTHS_BN[dateObj.getMonth()];
-          if (!entryYear || entryYear === '') entryYear = dp[0];
+          if (needMonthFix) entryMonth = MONTHS_BN[dateObj.getMonth()];
+          if (needYearFix) entryYear = dp[0];
         }
       }
 

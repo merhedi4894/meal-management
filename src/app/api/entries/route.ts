@@ -298,7 +298,8 @@ export async function GET(request: NextRequest) {
         const dateStr = (e.entryDate || '').substring(0, 10);
         const dp = dateStr.split('-');
         if (dp.length !== 3) continue;
-        if (e.month && e.month !== '' && e.year && e.year !== '') continue;
+        const needFix = !e.month || e.month === '' || !MONTHS_BN.includes(e.month) || !e.year || e.year === '';
+        if (!needFix) continue;
         const dateObj = new Date(parseInt(dp[0]), parseInt(dp[1]) - 1, parseInt(dp[2]));
         const fixedMonth = MONTHS_BN[dateObj.getMonth()];
         const fixedYear = dp[0];
@@ -1165,13 +1166,15 @@ export async function GET(request: NextRequest) {
       for (const entry of allMatching) {
         const e = entry as any;
         // ===== month/year অটো-ফিক্স: entryDate থেকে ডেরিভ =====
-        if ((!e.month || e.month === '' || !e.year || e.year === '') && e.entryDate) {
+        const needMFix = !e.month || e.month === '' || !MONTHS_BN.includes(e.month);
+        const needYFix = !e.year || e.year === '';
+        if ((needMFix || needYFix) && e.entryDate) {
           const dateStr = (e.entryDate || '').substring(0, 10);
           const dp = dateStr.split('-');
           if (dp.length === 3) {
             const dateObj = new Date(parseInt(dp[0]), parseInt(dp[1]) - 1, parseInt(dp[2]));
-            if (!e.month || e.month === '') e.month = MONTHS_BN[dateObj.getMonth()];
-            if (!e.year || e.year === '') e.year = dp[0];
+            if (needMFix) e.month = MONTHS_BN[dateObj.getMonth()];
+            if (needYFix) e.year = dp[0];
           }
         }
         const dateStr = (e.entryDate || '').substring(0, 10); // "YYYY-MM-DD"

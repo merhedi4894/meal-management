@@ -219,6 +219,11 @@ async function recalculateBalancesForOffice(officeId: string) {
   let runningBal = 0;
   const statements: Array<{ sql: string; args: any[] }> = [];
 
+  const MONTHS_BN = [
+    'জানুয়ারি', 'ফেব্রুয়ারি', 'মার্চ', 'এপ্রিল', 'মে', 'জুন',
+    'জুলাই', 'আগস্ট', 'সেপ্টেম্বর', 'অক্টোবর', 'নভেম্বর', 'ডিসেম্বর'
+  ];
+
   for (const entry of entries) {
     const e = entry as any;
     const eB = Number(e.breakfastCount) || 0;
@@ -227,7 +232,20 @@ async function recalculateBalancesForOffice(officeId: string) {
     const eLS = Number(e.lunchSpecial) || 0;
     const eDep = Number(e.deposit) || 0;
 
-    const setting = settingMap.get(`${e.month}|${String(e.year)}`);
+    // ===== month auto-fix: numeric months → Bengali =====
+    let entryMonth = e.month || '';
+    let entryYear = String(e.year || '');
+    if (!MONTHS_BN.includes(entryMonth) && e.entryDate) {
+      const dateStr = String(e.entryDate).substring(0, 10);
+      const dp = dateStr.split('-');
+      if (dp.length === 3) {
+        const dateObj = new Date(parseInt(dp[0]), parseInt(dp[1]) - 1, parseInt(dp[2]));
+        entryMonth = MONTHS_BN[dateObj.getMonth()];
+        entryYear = dp[0];
+      }
+    }
+
+    const setting = settingMap.get(`${entryMonth}|${entryYear}`);
     const bp = setting?.breakfastPrice || 0;
     const lp = setting?.lunchPrice || 0;
     const ms = setting?.morningSpecial || 0;
@@ -789,22 +807,23 @@ export async function PUT(request: NextRequest) {
         [newB, newL, newMS, newLS, newBill, entry.id]
       );
     } else {
-      // No linked MealEntry (sourceOrderId was cleared from old deadline expiry)
-      // Find the unlinked MealEntry for this officeId+month+year with matching old counts
+      // No linked MealEntry (sourceOrderId was cleared or never set)
+      // Find unlinked MealEntry for this officeId + same day (orderDate)
+      // This is more reliable than matching by month+year+exact counts
+      const dateStr = orderDate.substring(0, 10);
       const { month: m, year: y } = getBdMonthYear(orderDate);
       const fallbackEntry = await query(
-        `SELECT * FROM MealEntry WHERE officeId = ? AND month = ? AND year = ?
+        `SELECT * FROM MealEntry WHERE officeId = ? AND substr(entryDate, 1, 10) = ?
          AND (sourceOrderId IS NULL OR sourceOrderId = '')
-         AND breakfastCount = ? AND lunchCount = ? AND morningSpecial = ? AND lunchSpecial = ?
-         AND deposit = 0 ORDER BY rowid DESC LIMIT 1`,
-        [officeId, m, y, oldB, oldL, oldMS, oldLS]
+         ORDER BY rowid DESC LIMIT 1`,
+        [officeId, dateStr]
       );
       if (fallbackEntry.rows.length > 0) {
         const entry = fallbackEntry.rows[0] as any;
 
-        // totalBill রিক্যালকুলেট করুন
+        // totalBill রিক্যালকুলেট করুন — use corrected Bengali month
         const priceSetting = await db.priceSetting.findUnique({
-          where: { month_year: { month: entry.month || m, year: entry.year || String(y) } }
+          where: { month_year: { month: m, year: String(y) } }
         });
         const bp = priceSetting?.breakfastPrice || 0;
         const lp = priceSetting?.lunchPrice || 0;
@@ -816,9 +835,9 @@ export async function PUT(request: NextRequest) {
           `UPDATE MealEntry
            SET breakfastCount = ?, lunchCount = ?,
                morningSpecial = ?, lunchSpecial = ?,
-               totalBill = ?
+               totalBill = ?, month = ?, year = ?
            WHERE id = ?`,
-          [newB, newL, newMS, newLS, newBill, entry.id]
+          [newB, newL, newMS, newLS, newBill, m, String(y), entry.id]
         );
         // Re-link the MealEntry to this MealOrder
         await query('UPDATE MealEntry SET sourceOrderId = ? WHERE id = ?', [prev.id, entry.id]);
@@ -889,16 +908,13 @@ export async function DELETE(request: NextRequest) {
       }
       // Also handle case where sourceOrderId was cleared (old orders)
       if (linkedEntry.rows.length === 0) {
-        const { month, year } = getBdMonthYear(orderDate);
-        // Find the unlinked MealEntry for this officeId+month+year with matching counts
+        const dateStr = orderDate.substring(0, 10);
+        // Find the unlinked MealEntry for this officeId + same day
         const fallbackEntry = await query(
-          `SELECT * FROM MealEntry WHERE officeId = ? AND month = ? AND year = ?
+          `SELECT * FROM MealEntry WHERE officeId = ? AND substr(entryDate, 1, 10) = ?
            AND (sourceOrderId IS NULL OR sourceOrderId = '')
-           AND breakfastCount = ? AND lunchCount = ? AND morningSpecial = ? AND lunchSpecial = ?
-           AND deposit = 0 ORDER BY rowid DESC LIMIT 1`,
-          [officeId, month, year,
-           Number(order.breakfast) || 0, Number(order.lunch) || 0,
-           Number(order.morningSpecial) || 0, Number(order.lunchSpecial) || 0]
+           ORDER BY rowid DESC LIMIT 1`,
+          [officeId, dateStr]
         );
         if (fallbackEntry.rows.length > 0) {
           await query('DELETE FROM MealEntry WHERE id = ?', [(fallbackEntry.rows[0] as any).id]);
