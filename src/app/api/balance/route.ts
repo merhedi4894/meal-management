@@ -6,13 +6,21 @@ function parseEntryDate(date: Date | string): number {
   if (typeof date === 'number') return date;
   if (!date) return 0;
   const s = String(date).trim();
+  if (/^\d{4}-\d{2}-\d{2}\d{2}:\d{2}/.test(s)) {
+    const fixed = s.replace(/^(\d{4}-\d{2}-\d{2})(\d)/, '$1T$2');
+    return new Date(fixed.includes('Z') || fixed.includes('+') ? fixed : fixed + '+06:00').getTime();
+  }
   if (s.includes('Z') || s.includes('+') || s.includes('-06:00') || s.includes('-05:00')) return new Date(s).getTime();
   return new Date(s + '+06:00').getTime();
 }
 
+// বাংলা মাসের নাম
+const MONTHS_BN = [
+  'জানুয়ারি', 'ফেব্রুয়ারি', 'মার্চ', 'এপ্রিল', 'মে', 'জুন',
+  'জুলাই', 'আগস্ট', 'সেপ্টেম্বর', 'অক্টোবর', 'নভেম্বর', 'ডিসেম্বর'
+];
+
 // GET: সব কর্মীর অন-দ্য-ফ্লাই ব্যালেন্স (MealEntry থেকে only)
-// MealOrder-এর জন্য MealEntry-তে sourceOrderId দিয়ে linked entry তৈরি হয়
-// তাই MealEntry থেকেই সঠিক ব্যালেন্স পাওয়া যায় — MealOrder আলাদা করে যোগ করলে double-counting হয়
 export async function GET() {
   try {
     // ১. সব MealEntry আনুন
@@ -24,7 +32,7 @@ export async function GET() {
     const allPriceSettings = await db.priceSetting.findMany();
     const priceMap = new Map<string, { breakfastPrice: number; lunchPrice: number; morningSpecial: number; lunchSpecial: number }>();
     for (const s of allPriceSettings) {
-      priceMap.set(`${s.month}|${String(s.year)}`, {
+      priceMap.set(`${s.month}|${s.year}`, {
         breakfastPrice: s.breakfastPrice, lunchPrice: s.lunchPrice,
         morningSpecial: s.morningSpecial, lunchSpecial: s.lunchSpecial,
       });
@@ -32,7 +40,6 @@ export async function GET() {
 
     // ৩. প্রতিটি officeId এর জন্য রানিং ব্যালেন্স ক্যালকুলেট
     // ===== SAME-DAY DEDUP: একই officeId + একই দিনের multiple entry → merge করুন =====
-    // এটি double-counting প্রতিরোধ করে যখন manual entry + order-linked entry একই দিনে থাকে
     const entryMap = new Map<string, Array<{
       officeId: string; name: string; mobile: string; designation: string;
       month: string; year: string; entryDate: Date | string;
@@ -40,16 +47,25 @@ export async function GET() {
       totalBill: number; deposit: number;
     }>>();
 
-    // Dedup map: key = "officeId_dateStr" → already seen?
-    const dedupSeen = new Set<string>();
-
     for (const e of allEntries) {
       const oid = e.officeId;
       if (!oid) continue;
 
+      // ===== month/year অটো-ফিক্স: entryDate থেকে ডেরিভ (homepage এর মতো) =====
+      let entryMonth = e.month || '';
+      let entryYear = e.year || '';
+      if ((!entryMonth || entryMonth === '' || !entryYear || entryYear === '') && e.entryDate) {
+        const dateStr = String(e.entryDate || '').substring(0, 10);
+        const dp = dateStr.split('-');
+        if (dp.length === 3) {
+          const dateObj = new Date(parseInt(dp[0]), parseInt(dp[1]) - 1, parseInt(dp[2]));
+          if (!entryMonth || entryMonth === '') entryMonth = MONTHS_BN[dateObj.getMonth()];
+          if (!entryYear || entryYear === '') entryYear = dp[0];
+        }
+      }
+
       // ===== DEDUP: same officeId + same date → merge into one entry =====
       const dateStr = String(e.entryDate || '').substring(0, 10); // "YYYY-MM-DD"
-      const dedupKey = `${oid}_${dateStr}`;
 
       if (!entryMap.has(oid)) entryMap.set(oid, []);
 
@@ -60,7 +76,7 @@ export async function GET() {
       });
 
       if (existingIdx >= 0) {
-        // Same-day entry exists → merge counts + deposit (keep higher quality name/mobile/designation)
+        // Same-day entry exists → merge counts + deposit
         const existing = existingArr[existingIdx];
         existing.breakfastCount += Number(e.breakfastCount || 0);
         existing.lunchCount += Number(e.lunchCount || 0);
@@ -71,14 +87,17 @@ export async function GET() {
         if (!existing.name && e.name) existing.name = e.name || '';
         if (!existing.mobile || (e.mobile && e.mobile.length > existing.mobile.length)) existing.mobile = e.mobile || '';
         if (!existing.designation || (e.designation && e.designation.length > existing.designation.length)) existing.designation = e.designation || '';
+        // Keep better month/year
+        if (!existing.month && entryMonth) existing.month = entryMonth;
+        if (!existing.year && entryYear) existing.year = entryYear;
       } else {
         entryMap.get(oid)!.push({
           officeId: oid,
           name: e.name || '',
           mobile: e.mobile || '',
           designation: (e as any).designation || '',
-          month: e.month,
-          year: String(e.year),
+          month: entryMonth,
+          year: entryYear,
           entryDate: e.entryDate,
           breakfastCount: Number(e.breakfastCount || 0),
           lunchCount: Number(e.lunchCount || 0),

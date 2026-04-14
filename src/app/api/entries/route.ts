@@ -670,6 +670,13 @@ export async function GET(request: NextRequest) {
 
       const userMap = new Map<string, { officeId: string; name: string; mobile: string; designation: string }>();
 
+      // Helper: unique key generator — officeId থাকলে officeId, না থাকলে name+mobile
+      const makeKey = (oid: string, name: string, mobile: string) => {
+        if (oid) return oid.toLowerCase();
+        const mobilePart = mobile ? `_${mobile.replace(/\D/g, '')}` : '';
+        return `_${name.toLowerCase()}${mobilePart}`;
+      };
+
       // Helper: best data merger
       const mergeUser = (existing: { officeId: string; name: string; mobile: string; designation: string }, newRow: { officeId: string; name: string; mobile: string; designation: string }) => {
         if (!existing.name && newRow.name) existing.name = newRow.name;
@@ -709,7 +716,7 @@ export async function GET(request: NextRequest) {
           const oid = (r.officeId || '').trim();
           const rName = (r.name || '').trim();
           if (!oid && !rName) continue;
-          const key = (oid || `_${rName}`).toLowerCase();
+          const key = makeKey(oid, rName, (r.mobile || '').trim());
           if (!userMap.has(key)) {
             userMap.set(key, { officeId: oid, name: rName, mobile: (r.mobile || '').trim(), designation: (r.designation || '').trim() });
           } else {
@@ -727,7 +734,7 @@ export async function GET(request: NextRequest) {
           const oid = (r.officeId || '').trim();
           const rName = (r.name || '').trim();
           if (!oid && !rName) continue;
-          const key = (oid || `_${rName}`).toLowerCase();
+          const key = makeKey(oid, rName, (r.mobile || '').trim());
           if (!userMap.has(key)) {
             userMap.set(key, { officeId: oid, name: rName, mobile: (r.mobile || '').trim(), designation: (r.designation || '').trim() });
           } else {
@@ -745,7 +752,7 @@ export async function GET(request: NextRequest) {
           const oid = (r.officeId || '').trim();
           const rName = (r.name || '').trim();
           if (!oid && !rName) continue;
-          const key = (oid || `_${rName}`).toLowerCase();
+          const key = makeKey(oid, rName, (r.mobile || '').trim());
           if (!userMap.has(key)) {
             userMap.set(key, { officeId: oid, name: rName, mobile: (r.mobile || '').trim(), designation: (r.designation || '').trim() });
           } else {
@@ -925,8 +932,21 @@ export async function GET(request: NextRequest) {
       const mobileStrippedPattern = qStripped !== qClean && qStripped.length >= 3 ? `%${qStripped}%` : '';
 
       // Dedup: designation field → designation value, others → officeId
+      // ✅ officeId না থাকলে officeId + name + mobile দিয়ে unique key বানান
       const dedupByDesignation = isDesigField;
       const userMap = new Map<string, { officeId: string; name: string; mobile: string; designation: string }>();
+
+      // Helper: unique key generator — officeId থাকলে officeId, না থাকলে name+mobile
+      const makeKey = (oid: string, name: string, mobile: string, isDesig: boolean, desig: string) => {
+        if (isDesig) {
+          return (desig || `_${oid || name}`).toLowerCase();
+        }
+        // officeId থাকলে officeId দিয়ে dedup
+        if (oid) return oid.toLowerCase();
+        // officeId না থাকলে name + mobile দিয়ে dedup (দুইজন একই নামে থাকলে আলাদা হবে)
+        const mobilePart = mobile ? `_${mobile.replace(/\D/g, '')}` : '';
+        return `_${name.toLowerCase()}${mobilePart}`;
+      };
 
       // Helper: best data picker — existing আর new মিলিয়ে সেরা data বানান
       const mergeUser = (existing: { officeId: string; name: string; mobile: string; designation: string }, newRow: { officeId: string; name: string; mobile: string; designation: string }) => {
@@ -979,9 +999,7 @@ export async function GET(request: NextRequest) {
 
           if (!oid && !rName) continue; // কোনো data না থাকলে skip
 
-          const key = dedupByDesignation
-            ? (rDesig || `_${oid || rName}`).toLowerCase()
-            : (oid || `_${rName}`).toLowerCase();
+          const key = makeKey(oid, rName, rMobile, dedupByDesignation, rDesig);
 
           if (!userMap.has(key)) {
             userMap.set(key, { officeId: oid, name: rName, mobile: rMobile, designation: rDesig });
@@ -1004,9 +1022,7 @@ export async function GET(request: NextRequest) {
 
           if (!oid && !rName) continue;
 
-          const key = dedupByDesignation
-            ? (rDesig || `_${oid || rName}`).toLowerCase()
-            : (oid || `_${rName}`).toLowerCase();
+          const key = makeKey(oid, rName, rMobile, dedupByDesignation, rDesig);
 
           if (!userMap.has(key)) {
             userMap.set(key, { officeId: oid, name: rName, mobile: rMobile, designation: rDesig });
@@ -1029,9 +1045,7 @@ export async function GET(request: NextRequest) {
 
           if (!oid && !rName) continue;
 
-          const key = dedupByDesignation
-            ? (rDesig || `_${oid || rName}`).toLowerCase()
-            : (oid || `_${rName}`).toLowerCase();
+          const key = makeKey(oid, rName, rMobile, dedupByDesignation, rDesig);
 
           if (!userMap.has(key)) {
             userMap.set(key, { officeId: oid, name: rName, mobile: rMobile, designation: rDesig });

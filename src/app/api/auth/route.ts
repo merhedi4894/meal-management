@@ -83,6 +83,13 @@ export async function GET(request: NextRequest) {
       const likePattern = `%${qLower}%`;
       const userMap = new Map<string, { officeId: string; name: string; mobile: string; designation: string }>();
 
+      // Helper: unique key generator
+      const makeKey = (oid: string, name: string, mobile: string) => {
+        if (oid) return oid.toLowerCase();
+        const mobilePart = mobile ? `_${mobile.replace(/\D/g, '')}` : '';
+        return `_${name.toLowerCase()}${mobilePart}`;
+      };
+
       // Helper: best data merger
       const mergeUser = (existing: { officeId: string; name: string; mobile: string; designation: string }, newRow: { officeId: string; name: string; mobile: string; designation: string }) => {
         if (!existing.name && newRow.name) existing.name = newRow.name;
@@ -108,7 +115,7 @@ export async function GET(request: NextRequest) {
             const oid = (r.officeId || '').trim();
             const rName = (r.name || '').trim();
             if (!oid && !rName) continue;
-            const key = (oid || `_${rName}`).toLowerCase();
+            const key = makeKey(oid, rName, (r.mobile || '').trim());
             if (!userMap.has(key)) {
               userMap.set(key, {
                 officeId: oid,
