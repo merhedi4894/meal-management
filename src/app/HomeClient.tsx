@@ -1484,6 +1484,13 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
     window.open(`/api/export-xlsx?${params}`, '_blank');
   };
 
+  // ===== Market Expense Excel Download =====
+  const handleDownloadMarketExpense = () => {
+    if (!marketExpenseSearchMonth || !marketExpenseSearchYear) return;
+    const params = new URLSearchParams({ type: 'market-expense', month: marketExpenseSearchMonth, year: marketExpenseSearchYear });
+    window.open(`/api/export-xlsx?${params}`, '_blank');
+  };
+
   // ===== মোবাইল নম্বর সিঙ্ক =====
   const handleSyncMobile = async () => {
     setSyncMobileLoading(true);
@@ -2823,6 +2830,11 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
           <CardHeader className="pb-3 bg-orange-50 rounded-t-lg">
             <CardTitle className="text-lg flex items-center gap-2">
               <ShoppingCart className="h-5 w-5 text-orange-600" />বাজার খরচ
+              {marketExpenseResults.length > 0 && (
+                <Button size="sm" variant="outline" onClick={handleDownloadMarketExpense} className="ml-auto gap-1 text-xs border-orange-300 text-orange-700 hover:bg-orange-100 h-7">
+                  <Download className="h-3 w-3" /> ডাউনলোড
+                </Button>
+              )}
             </CardTitle>
           </CardHeader>
           <CardContent className="pt-3 space-y-4">
