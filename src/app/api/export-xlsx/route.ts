@@ -22,7 +22,12 @@ const BN_TO_EN: Record<string, string> = {
 function parseBDDate(date: Date | string | number): Date {
   if (typeof date === 'number') return new Date(date);
   const s = String(date).trim();
-  const fixed = s.replace(/^(\d{4}-\d{2}-\d{2})(\d)/, '$1T$2');
+  // Pure date "YYYY-MM-DD" (10 chars) → parse directly with BD timezone
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    return new Date(s + 'T00:00:00+06:00');
+  }
+  // ISO-like string without T separator: "YYYY-MM-DDHH:MM:SS" → insert T
+  const fixed = s.replace(/^(\d{4}-\d{2}-\d{2})(\d{2})/, '$1T$2');
   if (fixed.includes('Z') || fixed.includes('+')) return new Date(fixed);
   return new Date(fixed + '+06:00');
 }
@@ -189,33 +194,54 @@ async function exportDataSheet(month: string, year: string) {
     if (r.officeId) userMap.set(r.officeId, r);
   }
 
-  const headers = [
-    'ক্রমিক', 'তারিখ', 'মাস', 'বছর', 'অফিস আইডি', 'নাম', 'পদবী', 'মোবাইল',
-    'সকাল নাস্তা', 'দুপুর মিল', 'সকাল স্পেশাল', 'দুপুর স্পেশাল',
-    'মোট বিল (টাকা)', 'জমা (টাকা)', 'জমার তারিখ', 'পূর্বের ব্যালেন্স', 'বর্তমান ব্যালেন্স'
+  // Pre-process: check which optional columns have any non-zero data
+  let hasBreakfast = false, hasLunch = false, hasMorningSpecial = false, hasLunchSpecial = false;
+  let hasTotalBill = false, hasDeposit = false, hasDepositDate = false, hasPrevBalance = false, hasCurBalance = false;
+
+  for (const e of entries) {
+    const entry = e as any;
+    if (Number(entry.breakfastCount) > 0) hasBreakfast = true;
+    if (Number(entry.lunchCount) > 0) hasLunch = true;
+    if (Number(entry.morningSpecial) > 0) hasMorningSpecial = true;
+    if (Number(entry.lunchSpecial) > 0) hasLunchSpecial = true;
+    if (Number(entry.totalBill) > 0) hasTotalBill = true;
+    if (Number(entry.deposit) > 0) hasDeposit = true;
+    if (entry.depositDate) hasDepositDate = true;
+    if (Number(entry.prevBalance) !== 0) hasPrevBalance = true;
+    if (Number(entry.curBalance) !== 0) hasCurBalance = true;
+  }
+
+  // Build dynamic headers & column config
+  const colDefs: { header: string; key: string; width: number }[] = [
+    { header: 'ক্রমিক', key: 'serial', width: 6 },
+    { header: 'তারিখ', key: 'date', width: 13 },
+    { header: 'মাস', key: 'month', width: 16 },
+    { header: 'বছর', key: 'year', width: 8 },
+    { header: 'অফিস আইডি', key: 'officeId', width: 12 },
+    { header: 'নাম', key: 'name', width: 25 },
+    { header: 'পদবী', key: 'designation', width: 22 },
+    { header: 'মোবাইল', key: 'mobile', width: 15 },
   ];
+
+  if (hasBreakfast) colDefs.push({ header: 'সকাল নাস্তা', key: 'breakfast', width: 12 });
+  if (hasLunch) colDefs.push({ header: 'দুপুর মিল', key: 'lunch', width: 12 });
+  if (hasMorningSpecial) colDefs.push({ header: 'সকাল স্পেশাল', key: 'morningSpecial', width: 14 });
+  if (hasLunchSpecial) colDefs.push({ header: 'দুপুর স্পেশাল', key: 'lunchSpecial', width: 14 });
+  if (hasTotalBill) colDefs.push({ header: 'মোট বিল (টাকা)', key: 'totalBill', width: 14 });
+  if (hasDeposit) colDefs.push({ header: 'জমা (টাকা)', key: 'deposit', width: 14 });
+  if (hasDepositDate) colDefs.push({ header: 'জমার তারিখ', key: 'depositDate', width: 14 });
+  if (hasPrevBalance) colDefs.push({ header: 'পূর্বের ব্যালেন্স', key: 'prevBalance', width: 16 });
+  if (hasCurBalance) colDefs.push({ header: 'বর্তমান ব্যালেন্স', key: 'curBalance', width: 18 });
+
+  const headers = colDefs.map(c => c.header);
+  const numColStart = colDefs.findIndex(c => ['breakfast', 'lunch', 'morningSpecial', 'lunchSpecial', 'totalBill', 'deposit', 'prevBalance', 'curBalance'].includes(c.key));
+  const firstNumCol = numColStart >= 0 ? numColStart + 1 : headers.length + 1;
 
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('মিল ডাটা', { properties: { defaultRowHeight: 20 } });
 
-  // Column widths
-  ws.getColumn(1).width = 6;
-  ws.getColumn(2).width = 13;
-  ws.getColumn(3).width = 16;
-  ws.getColumn(4).width = 8;
-  ws.getColumn(5).width = 12;
-  ws.getColumn(6).width = 25;
-  ws.getColumn(7).width = 22;
-  ws.getColumn(8).width = 15;
-  ws.getColumn(9).width = 12;
-  ws.getColumn(10).width = 12;
-  ws.getColumn(11).width = 14;
-  ws.getColumn(12).width = 14;
-  ws.getColumn(13).width = 14;
-  ws.getColumn(14).width = 14;
-  ws.getColumn(15).width = 14;
-  ws.getColumn(16).width = 16;
-  ws.getColumn(17).width = 18;
+  // Set column widths
+  colDefs.forEach((c, i) => { ws.getColumn(i + 1).width = c.width; });
 
   // Title
   const titleText = month && month !== 'all' ? `মিল ডাটা — ${month}, ${year}` : `মিল ডাটা — ${year}`;
@@ -239,18 +265,36 @@ async function exportDataSheet(month: string, year: string) {
     const dep = Number(e.deposit) || 0;
     tB += rB; tL += rL; tMS += rMS; tLS += rLS; tBill += bill; tDep += dep;
 
-    addDataRow(ws, [
+    const rowData: (string | number)[] = [
       i + 1, formatDateDDMMYYYY(e.entryDate),
       `${e.month || ''} (${enMonth})`, e.year || '',
       e.officeId || '', e.name || '', e.designation || user?.designation || '', e.mobile || user?.mobile || '',
-      rB, rL, rMS, rLS, bill, dep,
-      e.depositDate ? formatDateDDMMYYYY(e.depositDate) : '',
-      Number(e.prevBalance) || 0, Number(e.curBalance) || 0,
-    ], false, '4472C4', 9);
+    ];
+    if (hasBreakfast) rowData.push(rB);
+    if (hasLunch) rowData.push(rL);
+    if (hasMorningSpecial) rowData.push(rMS);
+    if (hasLunchSpecial) rowData.push(rLS);
+    if (hasTotalBill) rowData.push(bill);
+    if (hasDeposit) rowData.push(dep);
+    if (hasDepositDate) rowData.push(e.depositDate ? formatDateDDMMYYYY(e.depositDate) : '');
+    if (hasPrevBalance) rowData.push(Number(e.prevBalance) || 0);
+    if (hasCurBalance) rowData.push(Number(e.curBalance) || 0);
+
+    addDataRow(ws, rowData, false, '4472C4', firstNumCol);
   }
 
   // Totals row
-  addDataRow(ws, ['মোট', '', '', '', '', '', '', '', tB, tL, tMS, tLS, tBill, tDep, '', '', ''], true, '4472C4', 9);
+  const totalRow: (string | number)[] = ['মোট', '', '', '', '', '', '', ''];
+  if (hasBreakfast) totalRow.push(tB);
+  if (hasLunch) totalRow.push(tL);
+  if (hasMorningSpecial) totalRow.push(tMS);
+  if (hasLunchSpecial) totalRow.push(tLS);
+  if (hasTotalBill) totalRow.push(tBill);
+  if (hasDeposit) totalRow.push(tDep);
+  if (hasDepositDate) totalRow.push('');
+  if (hasPrevBalance) totalRow.push('');
+  if (hasCurBalance) totalRow.push('');
+  addDataRow(ws, totalRow, true, '4472C4', firstNumCol);
 
   setupPrint(ws, 'landscape');
 
@@ -332,7 +376,7 @@ async function exportBalanceSheet(balType: string) {
   const title = isDue ? 'বকেয়া টাকার হিসাব' : 'অগ্রিম টাকার হিসাব';
   const color = isDue ? 'C00000' : '006600';
 
-  const headers = ['ক্রমিক', 'অফিস আইডি', 'নাম', 'পদবী', 'মোবাইল', 'মোট সকাল নাস্তা', 'মোট দুপুর মিল', 'মোট বিল (টাকা)', 'মোট জমা (টাকা)', `${isDue ? 'বকেয়া' : 'অগ্রিম'} (টাকা)`];
+  const headers = ['ক্রমিক', 'অফিস আইডি', 'নাম', 'পদবী', 'মোবাইল', `${isDue ? 'বকেয়া' : 'অগ্রিম'} (টাকা)`];
 
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet(isDue ? 'বকেয়া টাকা' : 'অগ্রিম টাকা', { properties: { defaultRowHeight: 20 } });
@@ -342,11 +386,7 @@ async function exportBalanceSheet(balType: string) {
   ws.getColumn(3).width = 25;
   ws.getColumn(4).width = 22;
   ws.getColumn(5).width = 16;
-  ws.getColumn(6).width = 14;
-  ws.getColumn(7).width = 14;
-  ws.getColumn(8).width = 14;
-  ws.getColumn(9).width = 14;
-  ws.getColumn(10).width = 18;
+  ws.getColumn(6).width = 18;
 
   addTitleRow(ws, title, headers.length, color, 16);
   addSubtitleRow(ws, `তারিখ: ${formatDateDDMMYYYY(new Date())}`, headers.length);
@@ -358,13 +398,13 @@ async function exportBalanceSheet(balType: string) {
     const e = filtered[i];
     const amount = isDue ? Math.abs(e.curBalance) : e.curBalance;
     grandTotal += amount;
-    const row = addDataRow(ws, [i + 1, e.officeId, e.name || '—', e.designation || '—', e.mobile || '—', e.totalBreakfast, e.totalLunch, e.totalBill, e.totalDeposit, amount], false, color, 5);
+    const row = addDataRow(ws, [i + 1, e.officeId, e.name || '—', e.designation || '—', e.mobile || '—', amount], false, color, 6);
     // Highlight amount column
-    const amtCell = row.getCell(10);
+    const amtCell = row.getCell(6);
     amtCell.font = { bold: true, size: 10, name: 'Arial', color: { argb: 'FF' + color } };
   }
 
-  addDataRow(ws, ['মোট', '', '', '', '', '', '', '', '', grandTotal], true, color, 5);
+  addDataRow(ws, ['মোট', '', '', '', '', grandTotal], true, color, 6);
 
   setupPrint(ws, 'portrait');
 
@@ -589,7 +629,7 @@ async function exportMarketExpenseSheet(month: string, year: string) {
   }
 
   // Monthly total footer
-  const footerRow = addDataRow(ws, ['মোট খরচ', '', '', totalCost, totalCost], true, 'C65102', 4);
+  const footerRow = addDataRow(ws, ['মোট', '', '', totalCost, totalCost], true, 'C65102', 4);
 
   setupPrint(ws, 'portrait');
 
