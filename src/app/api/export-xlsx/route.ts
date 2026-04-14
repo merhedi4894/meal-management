@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { query } from '@/lib/db';
-import * as XLSX from 'xlsx';
-import JSZip from 'jszip';
+import ExcelJS from 'exceljs';
 
 // ===== Constants =====
 
@@ -36,108 +35,115 @@ function formatDateDDMMYYYY(date: Date | string | number): string {
   return `${dd}/${mm}/${yyyy}`;
 }
 
-// Post-process XLSX buffer to inject print settings into XML
-async function injectPrintSettings(xlsxBuffer: Buffer, orientation: 'landscape' | 'portrait' = 'landscape'): Promise<Buffer> {
-  try {
-    const zip = await JSZip.loadAsync(xlsxBuffer);
-    const sheetFiles: string[] = [];
-    zip.forEach((path) => {
-      if (path.match(/^xl\/worksheets\/sheet\d+\.xml$/)) sheetFiles.push(path);
-    });
+// ===== Style Helpers for exceljs =====
 
-    for (const sheetPath of sheetFiles) {
-      let xml = await zip.file(sheetPath)?.async('string');
-      if (!xml) continue;
+const THIN_BORDER = {
+  top: { style: 'thin' as const, color: { argb: 'FF000000' } },
+  bottom: { style: 'thin' as const, color: { argb: 'FF000000' } },
+  left: { style: 'thin' as const, color: { argb: 'FF000000' } },
+  right: { style: 'thin' as const, color: { argb: 'FF000000' } },
+};
 
-      // Inject pageSetupPr with fitToPage
-      if (!xml.includes('pageSetupPr')) {
-        xml = xml.replace(
-          '<sheetPr>',
-          '<sheetPr><pageSetupPr fitToPage="1"/></sheetPr>'
-        );
-      }
+const LIGHT_BORDER = {
+  top: { style: 'thin' as const, color: { argb: 'FFD9D9D9' } },
+  bottom: { style: 'thin' as const, color: { argb: 'FFD9D9D9' } },
+  left: { style: 'thin' as const, color: { argb: 'FFD9D9D9' } },
+  right: { style: 'thin' as const, color: { argb: 'FFD9D9D9' } },
+};
 
-      // Inject <pageSetup> with fit-to-page
-      if (!xml.includes('<pageSetup')) {
-        xml = xml.replace(
-          '</worksheet>',
-          `<pageSetup paperSize="9" orientation="${orientation}" fitToWidth="1" fitToHeight="0" fitToPage="1"/></worksheet>`
-        );
-      } else {
-        xml = xml.replace(
-          /<pageSetup[^/]*\/>/,
-          `<pageSetup paperSize="9" orientation="${orientation}" fitToWidth="1" fitToHeight="0" fitToPage="1"/>`
-        );
-      }
-
-      zip.file(sheetPath, xml);
-    }
-
-    return await zip.generateAsync({ type: 'nodebuffer' });
-  } catch {
-    return xlsxBuffer;
-  }
-}
-
-// Apply header style to row 3 (index 3)
-function styleHeaderRow(ws: XLSX.WorkSheet, colCount: number, headerRgb: string = '4472C4', startRow: number = 3) {
-  for (let c = 0; c < colCount; c++) {
-    const cell = ws[XLSX.utils.encode_cell({ r: startRow, c })];
-    if (cell) {
-      cell.s = {
-        alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
-        font: { bold: true, sz: 10, name: 'Arial', color: { rgb: 'FFFFFF' } },
-        fill: { fgColor: { rgb: headerRgb } },
-        border: {
-          top: { style: 'thin', color: { rgb: '000000' } },
-          bottom: { style: 'thin', color: { rgb: '000000' } },
-          left: { style: 'thin', color: { rgb: '000000' } },
-          right: { style: 'thin', color: { rgb: '000000' } },
-        },
-      };
-    }
-  }
-}
-
-// Apply data row styles with zebra striping
-function styleDataRows(ws: XLSX.WorkSheet, startRow: number, endRow: number, colCount: number, numColStart: number = 5, footerRowCount: number = 0) {
-  for (let r = startRow; r <= endRow; r++) {
-    for (let c = 0; c < colCount; c++) {
-      const cell = ws[XLSX.utils.encode_cell({ r, c })];
-      if (cell) {
-        const isFooter = r > endRow - footerRowCount && footerRowCount > 0;
-        cell.s = {
-          alignment: { vertical: 'center', wrapText: true },
-          font: { sz: 10, name: 'Arial', ...(isFooter ? { bold: true } : {}) },
-          fill: isFooter
-            ? { fgColor: { rgb: 'D6E4F0' } }
-            : { fgColor: { rgb: (r % 2 === 0) ? 'F2F2F2' : 'FFFFFF' } },
-          border: {
-            top: { style: 'thin', color: { rgb: 'D9D9D9' } },
-            bottom: { style: 'thin', color: { rgb: 'D9D9D9' } },
-            left: { style: 'thin', color: { rgb: 'D9D9D9' } },
-            right: { style: 'thin', color: { rgb: 'D9D9D9' } },
-          },
-        };
-        if (c >= numColStart) {
-          cell.s.alignment = { ...cell.s.alignment, horizontal: 'right' };
-        }
-      }
-    }
-  }
-}
-
-// Generate xlsx buffer with print settings and send as response
-async function buildXlsxResponse(wb: XLSX.WorkBook, fileName: string, orientation: 'landscape' | 'portrait' = 'landscape') {
-  const rawBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-  const buffer = await injectPrintSettings(rawBuffer, orientation);
-
+// Send workbook as downloadable xlsx response
+async function sendWorkbook(wb: ExcelJS.Workbook, fileName: string) {
+  const buffer = await wb.xlsx.writeBuffer();
   return new NextResponse(buffer, {
     headers: {
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'Content-Disposition': `attachment; filename="${encodeURIComponent(fileName)}"`,
     },
   });
+}
+
+// Setup print settings on a worksheet
+function setupPrint(ws: ExcelJS.Worksheet, orientation: 'landscape' | 'portrait' = 'landscape') {
+  ws.pageSetup = {
+    paperSize: 9, // A4
+    orientation: orientation,
+    fitToPage: true,
+    fitToWidth: 1,
+    fitToHeight: 0,
+    margins: { left: 0.25, right: 0.25, top: 0.4, bottom: 0.4, header: 0.3, footer: 0.3 },
+    printAreaRowStart: 1,
+    printAreaRowEnd: ws.rowCount,
+  };
+  ws.printOptions = { showGridLines: true };
+}
+
+// Add title row with merged cells
+function addTitleRow(ws: ExcelJS.Worksheet, text: string, colCount: number, color: string = '1F4E79', fontSize: number = 14) {
+  const row = ws.addRow([text]);
+  ws.mergeCells(1, 1, 1, colCount);
+  const cell = row.getCell(1);
+  cell.font = { bold: true, size: fontSize, name: 'Arial', color: { argb: 'FF' + color } };
+  cell.alignment = { horizontal: 'center', vertical: 'middle' };
+  row.height = 30;
+  return row;
+}
+
+// Add subtitle row (e.g. price info, date)
+function addSubtitleRow(ws: ExcelJS.Worksheet, text: string, colCount: number) {
+  const row = ws.addRow([text]);
+  ws.mergeCells(ws.rowCount, 1, ws.rowCount, colCount);
+  const cell = row.getCell(1);
+  cell.font = { size: 9, name: 'Arial', italic: true, color: { argb: 'FF666666' } };
+  cell.alignment = { horizontal: 'center', vertical: 'middle' };
+  row.height = 20;
+  return row;
+}
+
+// Add header row with styling
+function addHeaderRow(ws: ExcelJS.Worksheet, headers: string[], color: string = '4472C4'): ExcelJS.Row {
+  const row = ws.addRow(headers);
+  row.height = 24;
+  row.eachCell((cell, colNumber) => {
+    cell.font = { bold: true, size: 10, name: 'Arial', color: { argb: 'FFFFFFFF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + color } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+    cell.border = THIN_BORDER;
+  });
+  return row;
+}
+
+// Add data row with zebra striping
+function addDataRow(ws: ExcelJS.Worksheet, data: (string | number)[], isFooter: boolean = false, footerColor: string = '4472C4', numColStart: number = 5) {
+  const row = ws.addRow(data);
+  row.height = 20;
+  const rIdx = row.number;
+  row.eachCell((cell, colNumber) => {
+    if (isFooter) {
+      cell.font = { bold: true, size: 10, name: 'Arial', color: { argb: 'FF' + footerColor } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD6E4F0' } };
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FF' + footerColor } },
+        bottom: { style: 'thin', color: { argb: 'FF' + footerColor } },
+        left: LIGHT_BORDER.left, right: LIGHT_BORDER.right,
+      };
+    } else {
+      cell.font = { size: 10, name: 'Arial' };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: (rIdx % 2 === 0) ? 'FFF2F2F2' : 'FFFFFFFF' } };
+      cell.border = LIGHT_BORDER;
+    }
+    cell.alignment = { vertical: 'middle', wrapText: true };
+    if (colNumber >= numColStart) {
+      cell.alignment = { ...cell.alignment, horizontal: 'right' };
+    }
+  });
+  return row;
+}
+
+// Add blank spacing row
+function addBlankRow(ws: ExcelJS.Worksheet) {
+  const row = ws.addRow([]);
+  row.height = 8;
+  return row;
 }
 
 // =============================================
@@ -176,7 +182,6 @@ async function exportDataSheet(month: string, year: string) {
 
   const entries = await db.mealEntry.findMany({ where: whereExport, orderBy: { entryDate: 'asc' } });
 
-  // Enrich with MealUser data
   const usersResult = await query('SELECT officeId, name, mobile, designation FROM MealUser');
   const userMap = new Map<string, { name: string; mobile: string; designation: string }>();
   for (const row of usersResult.rows) {
@@ -190,74 +195,67 @@ async function exportDataSheet(month: string, year: string) {
     'মোট বিল (টাকা)', 'জমা (টাকা)', 'জমার তারিখ', 'পূর্বের ব্যালেন্স', 'বর্তমান ব্যালেন্স'
   ];
 
-  const rows: (string | number)[][] = [];
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('মিল ডাটা', { properties: { defaultRowHeight: 20 } });
+
+  // Column widths
+  ws.getColumn(1).width = 6;
+  ws.getColumn(2).width = 13;
+  ws.getColumn(3).width = 16;
+  ws.getColumn(4).width = 8;
+  ws.getColumn(5).width = 12;
+  ws.getColumn(6).width = 25;
+  ws.getColumn(7).width = 22;
+  ws.getColumn(8).width = 15;
+  ws.getColumn(9).width = 12;
+  ws.getColumn(10).width = 12;
+  ws.getColumn(11).width = 14;
+  ws.getColumn(12).width = 14;
+  ws.getColumn(13).width = 14;
+  ws.getColumn(14).width = 14;
+  ws.getColumn(15).width = 14;
+  ws.getColumn(16).width = 16;
+  ws.getColumn(17).width = 18;
+
+  // Title
+  const titleText = month && month !== 'all' ? `মিল ডাটা — ${month}, ${year}` : `মিল ডাটা — ${year}`;
+  addTitleRow(ws, titleText, headers.length, '1F4E79', 14);
+  addBlankRow(ws);
+
+  // Header row
+  addHeaderRow(ws, headers, '4472C4');
+
+  // Data rows
+  let tB = 0, tL = 0, tMS = 0, tLS = 0, tBill = 0, tDep = 0;
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i] as any;
     const user = userMap.get(e.officeId);
     const enMonth = BN_TO_EN[e.month] || e.month || '';
-    rows.push([
+    const rB = Number(e.breakfastCount) || 0;
+    const rL = Number(e.lunchCount) || 0;
+    const rMS = Number(e.morningSpecial) || 0;
+    const rLS = Number(e.lunchSpecial) || 0;
+    const bill = Number(e.totalBill) || 0;
+    const dep = Number(e.deposit) || 0;
+    tB += rB; tL += rL; tMS += rMS; tLS += rLS; tBill += bill; tDep += dep;
+
+    addDataRow(ws, [
       i + 1, formatDateDDMMYYYY(e.entryDate),
       `${e.month || ''} (${enMonth})`, e.year || '',
       e.officeId || '', e.name || '', e.designation || user?.designation || '', e.mobile || user?.mobile || '',
-      Number(e.breakfastCount) || 0, Number(e.lunchCount) || 0, Number(e.morningSpecial) || 0, Number(e.lunchSpecial) || 0,
-      Number(e.totalBill) || 0, Number(e.deposit) || 0,
+      rB, rL, rMS, rLS, bill, dep,
       e.depositDate ? formatDateDDMMYYYY(e.depositDate) : '',
       Number(e.prevBalance) || 0, Number(e.curBalance) || 0,
-    ]);
+    ], false, '4472C4', 9);
   }
 
   // Totals row
-  const tB = entries.reduce((s, e: any) => s + Number(e.breakfastCount) || 0, 0);
-  const tL = entries.reduce((s, e: any) => s + Number(e.lunchCount) || 0, 0);
-  const tMS = entries.reduce((s, e: any) => s + Number(e.morningSpecial) || 0, 0);
-  const tLS = entries.reduce((s, e: any) => s + Number(e.lunchSpecial) || 0, 0);
-  const tBill = entries.reduce((s, e: any) => s + Number(e.totalBill) || 0, 0);
-  const tDep = entries.reduce((s, e: any) => s + Number(e.deposit) || 0, 0);
-  rows.push(['মোট', '', '', '', '', '', '', '', tB, tL, tMS, tLS, tBill, tDep, '', '', '']);
+  addDataRow(ws, ['মোট', '', '', '', '', '', '', '', tB, tL, tMS, tLS, tBill, tDep, '', '', ''], true, '4472C4', 9);
 
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
-  ws['!cols'] = [
-    { wch: 6 }, { wch: 12 }, { wch: 22 }, { wch: 8 }, { wch: 12 }, { wch: 25 },
-    { wch: 22 }, { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 14 },
-    { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 16 }, { wch: 18 },
-  ];
-
-  // Style header (row 0)
-  for (let c = 0; c < headers.length; c++) {
-    const cell = ws[XLSX.utils.encode_cell({ r: 0, c })];
-    if (cell) {
-      cell.s = {
-        alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
-        font: { bold: true, sz: 10, name: 'Arial', color: { rgb: 'FFFFFF' } },
-        fill: { fgColor: { rgb: '4472C4' } },
-        border: { top: { style: 'thin', color: { rgb: '000000' } }, bottom: { style: 'thin', color: { rgb: '000000' } }, left: { style: 'thin', color: { rgb: '000000' } }, right: { style: 'thin', color: { rgb: '000000' } } },
-      };
-    }
-  }
-
-  // Style data rows
-  const lastRow = rows.length;
-  for (let r = 1; r <= lastRow; r++) {
-    for (let c = 0; c < headers.length; c++) {
-      const cell = ws[XLSX.utils.encode_cell({ r, c })];
-      if (cell) {
-        const isLast = r === lastRow;
-        cell.s = {
-          alignment: { vertical: 'center', wrapText: true },
-          font: { sz: 10, name: 'Arial', ...(isLast ? { bold: true } : {}) },
-          fill: isLast ? { fgColor: { rgb: 'D6E4F0' } } : { fgColor: { rgb: (r % 2 === 0) ? 'F2F2F2' : 'FFFFFF' } },
-          border: { top: { style: 'thin', color: { rgb: 'D9D9D9' } }, bottom: { style: 'thin', color: { rgb: 'D9D9D9' } }, left: { style: 'thin', color: { rgb: 'D9D9D9' } }, right: { style: 'thin', color: { rgb: 'D9D9D9' } } },
-        };
-        if (c >= 8) cell.s.alignment = { ...cell.s.alignment, horizontal: 'right' };
-      }
-    }
-  }
-
-  XLSX.utils.book_append_sheet(wb, ws, 'মিল ডাটা');
+  setupPrint(ws, 'landscape');
 
   const fileName = month && month !== 'all' ? `মিল_ডাটা_${month}_${year}.xlsx` : `মিল_ডাটা_${year}.xlsx`;
-  return buildXlsxResponse(wb, fileName, 'landscape');
+  return sendWorkbook(wb, fileName);
 }
 
 // =============================================
@@ -332,44 +330,47 @@ async function exportBalanceSheet(balType: string) {
   const isDue = balType === 'due';
   const filtered = balanceList.filter(e => isDue ? e.curBalance < 0 : e.curBalance > 0).sort((a, b) => a.name.localeCompare(b.name, 'bn'));
   const title = isDue ? 'বকেয়া টাকার হিসাব' : 'অগ্রিম টাকার হিসাব';
+  const color = isDue ? 'C00000' : '006600';
 
   const headers = ['ক্রমিক', 'অফিস আইডি', 'নাম', 'পদবী', 'মোবাইল', 'মোট সকাল নাস্তা', 'মোট দুপুর মিল', 'মোট বিল (টাকা)', 'মোট জমা (টাকা)', `${isDue ? 'বকেয়া' : 'অগ্রিম'} (টাকা)`];
 
-  const rows: (string | number)[][] = [];
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet(isDue ? 'বকেয়া টাকা' : 'অগ্রিম টাকা', { properties: { defaultRowHeight: 20 } });
+
+  ws.getColumn(1).width = 6;
+  ws.getColumn(2).width = 14;
+  ws.getColumn(3).width = 25;
+  ws.getColumn(4).width = 22;
+  ws.getColumn(5).width = 16;
+  ws.getColumn(6).width = 14;
+  ws.getColumn(7).width = 14;
+  ws.getColumn(8).width = 14;
+  ws.getColumn(9).width = 14;
+  ws.getColumn(10).width = 18;
+
+  addTitleRow(ws, title, headers.length, color, 16);
+  addSubtitleRow(ws, `তারিখ: ${formatDateDDMMYYYY(new Date())}`, headers.length);
+  addBlankRow(ws);
+  addHeaderRow(ws, headers, color);
+
   let grandTotal = 0;
   for (let i = 0; i < filtered.length; i++) {
     const e = filtered[i];
     const amount = isDue ? Math.abs(e.curBalance) : e.curBalance;
     grandTotal += amount;
-    rows.push([i + 1, e.officeId, e.name || '—', e.designation || '—', e.mobile || '—', e.totalBreakfast, e.totalLunch, e.totalBill, e.totalDeposit, amount]);
-  }
-  rows.push(['মোট', '', '', '', '', '', '', '', '', grandTotal]);
-
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet([[title], [`তারিখ: ${formatDateDDMMYYYY(new Date())}`], [''], headers, ...rows]);
-
-  ws['!cols'] = [{ wch: 6 }, { wch: 12 }, { wch: 25 }, { wch: 22 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 18 }];
-  ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 9 } }, { s: { r: 1, c: 0 }, e: { r: 1, c: 9 } }];
-
-  // Title
-  const tc = ws['A1'];
-  if (tc) tc.s = { alignment: { horizontal: 'center', vertical: 'center' }, font: { bold: true, sz: 16, name: 'Arial', color: { rgb: isDue ? 'C00000' : '006600' } } };
-  const dc = ws['A2'];
-  if (dc) dc.s = { alignment: { horizontal: 'center', vertical: 'center' }, font: { sz: 10, name: 'Arial', italic: true, color: { rgb: '666666' } } };
-
-  styleHeaderRow(ws, headers.length, isDue ? 'C00000' : '4472C4', 3);
-  styleDataRows(ws, 4, 4 + filtered.length, headers.length, 5, 1);
-
-  // Color amount column
-  for (let r = 4; r < 4 + filtered.length; r++) {
-    const cell = ws[XLSX.utils.encode_cell({ r, c: 9 })];
-    if (cell) cell.s.font = { ...cell.s.font, bold: true, color: { rgb: isDue ? 'C00000' : '006600' } };
+    const row = addDataRow(ws, [i + 1, e.officeId, e.name || '—', e.designation || '—', e.mobile || '—', e.totalBreakfast, e.totalLunch, e.totalBill, e.totalDeposit, amount], false, color, 5);
+    // Highlight amount column
+    const amtCell = row.getCell(10);
+    amtCell.font = { bold: true, size: 10, name: 'Arial', color: { argb: 'FF' + color } };
   }
 
-  XLSX.utils.book_append_sheet(wb, ws, isDue ? 'বকেয়া টাকা' : 'অগ্রিম টাকা');
+  addDataRow(ws, ['মোট', '', '', '', '', '', '', '', '', grandTotal], true, color, 5);
+
+  setupPrint(ws, 'portrait');
+
   const today = new Date().toISOString().split('T')[0];
   const fileName = `${isDue ? 'বকেয়া_টাকা' : 'অগ্রিম_টাকা'}_${today}.xlsx`;
-  return buildXlsxResponse(wb, fileName, 'portrait');
+  return sendWorkbook(wb, fileName);
 }
 
 // =============================================
@@ -410,26 +411,55 @@ async function exportMonthlyMealSheet(month: string, year: string) {
   const depResult = await query(`SELECT COALESCE(SUM(deposit), 0) as total FROM MealEntry WHERE month = ? AND year = ?`, [month, year]);
   const totalDep = Number((depResult.rows[0] as any)?.total) || 0;
 
-  const rows: (string | number)[][] = details.map((d, i) => [i + 1, d.officeId, d.name, d.designation || '—', d.mobile || '—', d.totalBreakfast, d.totalLunch, d.totalMorningSpecial, d.totalLunchSpecial, d.totalBill]);
-  rows.push(['মোট', '', '', '', '', gB, gL, gMS, gLS, grandTotal]);
-  rows.push(['', '', '', '', '', '', '', '', 'মোট জমা:', totalDep]);
-  rows.push(['', '', '', '', '', '', '', '', 'নিট বকেয়া:', grandTotal - totalDep]);
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet(`মাসিক মিল ${month}`, { properties: { defaultRowHeight: 20 } });
 
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet([[title], [priceRow], [''], headers, ...rows]);
-  ws['!cols'] = [{ wch: 6 }, { wch: 12 }, { wch: 25 }, { wch: 22 }, { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 14 }];
-  ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 9 } }, { s: { r: 1, c: 0 }, e: { r: 1, c: 9 } }];
+  ws.getColumn(1).width = 6;
+  ws.getColumn(2).width = 14;
+  ws.getColumn(3).width = 25;
+  ws.getColumn(4).width = 22;
+  ws.getColumn(5).width = 16;
+  ws.getColumn(6).width = 12;
+  ws.getColumn(7).width = 12;
+  ws.getColumn(8).width = 14;
+  ws.getColumn(9).width = 14;
+  ws.getColumn(10).width = 14;
 
-  const tc = ws['A1'];
-  if (tc) tc.s = { alignment: { horizontal: 'center', vertical: 'center' }, font: { bold: true, sz: 14, name: 'Arial', color: { rgb: '1F4E79' } } };
-  const pc = ws['A2'];
-  if (pc) pc.s = { alignment: { horizontal: 'center', vertical: 'center' }, font: { sz: 9, name: 'Arial', italic: true, color: { rgb: '666666' } } };
+  addTitleRow(ws, title, headers.length, '1F4E79', 14);
+  addSubtitleRow(ws, priceRow, headers.length);
+  addBlankRow(ws);
+  addHeaderRow(ws, headers, '1F4E79');
 
-  styleHeaderRow(ws, headers.length, '1F4E79', 3);
-  styleDataRows(ws, 4, 4 + details.length + 2, headers.length, 5, 3);
+  for (let i = 0; i < details.length; i++) {
+    const d = details[i];
+    addDataRow(ws, [i + 1, d.officeId, d.name, d.designation || '—', d.mobile || '—', d.totalBreakfast, d.totalLunch, d.totalMorningSpecial, d.totalLunchSpecial, d.totalBill], false, '1F4E79', 6);
+  }
 
-  XLSX.utils.book_append_sheet(wb, ws, `মাসিক মিল ${month}`);
-  return buildXlsxResponse(wb, `মাসিক_মিল_${month}_${year}.xlsx`, 'landscape');
+  // Grand total
+  addDataRow(ws, ['মোট', '', '', '', '', gB, gL, gMS, gLS, grandTotal], true, '1F4E79', 6);
+
+  // Deposit & Net balance rows
+  const depRow = ws.addRow(['', '', '', '', '', '', '', '', 'মোট জমা:', totalDep]);
+  depRow.height = 20;
+  depRow.eachCell((cell) => {
+    cell.font = { size: 10, name: 'Arial', bold: true };
+    cell.alignment = { vertical: 'middle' };
+  });
+  depRow.getCell(9).alignment = { horizontal: 'right', vertical: 'middle' };
+  depRow.getCell(10).numFmt = '#,##0';
+
+  const netRow = ws.addRow(['', '', '', '', '', '', '', '', 'নিট বকেয়া:', grandTotal - totalDep]);
+  netRow.height = 20;
+  netRow.eachCell((cell) => {
+    cell.font = { size: 10, name: 'Arial', bold: true };
+    cell.alignment = { vertical: 'middle' };
+  });
+  netRow.getCell(9).alignment = { horizontal: 'right', vertical: 'middle' };
+  netRow.getCell(10).numFmt = '#,##0';
+
+  setupPrint(ws, 'landscape');
+
+  return sendWorkbook(wb, `মাসিক_মিল_${month}_${year}.xlsx`);
 }
 
 // =============================================
@@ -462,32 +492,39 @@ async function exportDailyMealSheet(orderDate: string) {
 
   const orders = result.rows.filter((d: any) => Number(d.breakfast) > 0 || Number(d.lunch) > 0 || Number(d.morningSpecial) > 0 || Number(d.lunchSpecial) > 0).sort((a: any, b: any) => (a.name || '').localeCompare(b.name || '', 'bn'));
 
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet(`দৈনিক মিল ${dateStr}`, { properties: { defaultRowHeight: 20 } });
+
+  ws.getColumn(1).width = 6;
+  ws.getColumn(2).width = 14;
+  ws.getColumn(3).width = 25;
+  ws.getColumn(4).width = 22;
+  ws.getColumn(5).width = 16;
+  ws.getColumn(6).width = 12;
+  ws.getColumn(7).width = 12;
+  ws.getColumn(8).width = 14;
+  ws.getColumn(9).width = 14;
+  ws.getColumn(10).width = 14;
+
+  addTitleRow(ws, title, headers.length, '1F4E79', 14);
+  addSubtitleRow(ws, priceRow, headers.length);
+  addBlankRow(ws);
+  addHeaderRow(ws, headers, '2E75B6');
+
   let gB = 0, gL = 0, gMS = 0, gLS = 0, gTotal = 0;
-  const rows: (string | number)[][] = [];
   for (let i = 0; i < orders.length; i++) {
     const d = orders[i] as any;
     const tB = Number(d.breakfast) || 0, tL = Number(d.lunch) || 0, tMS = Number(d.morningSpecial) || 0, tLS = Number(d.lunchSpecial) || 0;
     const bill = tB * bp + tL * lp + tMS * msp + tLS * lsp;
     gB += tB; gL += tL; gMS += tMS; gLS += tLS; gTotal += bill;
-    rows.push([i + 1, d.officeId, d.name, d.designation || '—', d.mobile || '—', tB, tL, tMS, tLS, bill]);
+    addDataRow(ws, [i + 1, d.officeId, d.name, d.designation || '—', d.mobile || '—', tB, tL, tMS, tLS, bill], false, '2E75B6', 6);
   }
-  rows.push(['মোট', '', '', '', '', gB, gL, gMS, gLS, gTotal]);
 
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet([[title], [priceRow], [''], headers, ...rows]);
-  ws['!cols'] = [{ wch: 6 }, { wch: 12 }, { wch: 25 }, { wch: 22 }, { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 14 }];
-  ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 9 } }, { s: { r: 1, c: 0 }, e: { r: 1, c: 9 } }];
+  addDataRow(ws, ['মোট', '', '', '', '', gB, gL, gMS, gLS, gTotal], true, '2E75B6', 6);
 
-  const tc = ws['A1'];
-  if (tc) tc.s = { alignment: { horizontal: 'center', vertical: 'center' }, font: { bold: true, sz: 14, name: 'Arial', color: { rgb: '1F4E79' } } };
-  const pc = ws['A2'];
-  if (pc) pc.s = { alignment: { horizontal: 'center', vertical: 'center' }, font: { sz: 9, name: 'Arial', italic: true, color: { rgb: '666666' } } };
+  setupPrint(ws, 'landscape');
 
-  styleHeaderRow(ws, headers.length, '2E75B6', 3);
-  styleDataRows(ws, 4, 4 + orders.length, headers.length, 5, 1);
-
-  XLSX.utils.book_append_sheet(wb, ws, `দৈনিক মিল ${dateStr}`);
-  return buildXlsxResponse(wb, `দৈনিক_মিল_${dateStr}.xlsx`, 'landscape');
+  return sendWorkbook(wb, `দৈনিক_মিল_${dateStr}.xlsx`);
 }
 
 // =============================================
@@ -497,7 +534,6 @@ async function exportDailyMealSheet(orderDate: string) {
 async function exportMarketExpenseSheet(month: string, year: string) {
   if (!month || !year) return NextResponse.json({ success: false, error: 'মাস ও বছর দরকার' }, { status: 400 });
 
-  // Fetch market expenses from database
   const result = await query(
     `SELECT * FROM MarketExpense WHERE month = ? AND year = ? ORDER BY expenseDate ASC`,
     [month, year]
@@ -506,78 +542,56 @@ async function exportMarketExpenseSheet(month: string, year: string) {
   const expenses = result.rows as any[];
   const totalCost = expenses.reduce((sum: number, e: any) => sum + Number(e.totalCost || 0), 0);
 
+  // Group expenses by date for daily subtotals
+  const dailyMap = new Map<string, number>();
+  for (const e of expenses) {
+    const dateKey = e.expenseDate || 'Unknown';
+    dailyMap.set(dateKey, (dailyMap.get(dateKey) || 0) + Number(e.totalCost || 0));
+  }
+
   const enMonth = BN_TO_EN[month] || month || '';
   const title = `বাজার খরচের হিসাব — ${month} (${enMonth}), ${year}`;
   const dateRow = `ডাউনলোড তারিখ: ${formatDateDDMMYYYY(new Date())}`;
 
-  const headers = ['ক্রমিক', 'তারিখ', 'মালের বিবরণ', 'খরচ (টাকা)'];
+  const headers = ['ক্রমিক', 'তারিখ', 'মালের বিবরণ', 'খরচ (টাকা)', 'দৈনিক মোট (টাকা)'];
 
-  const rows: (string | number)[][] = [];
-  for (let i = 0; i < expenses.length; i++) {
-    const e = expenses[i];
-    rows.push([
-      i + 1,
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet(`বাজার খরচ ${month}`, { properties: { defaultRowHeight: 20 } });
+
+  ws.getColumn(1).width = 8;
+  ws.getColumn(2).width = 14;
+  ws.getColumn(3).width = 45;
+  ws.getColumn(4).width = 16;
+  ws.getColumn(5).width = 18;
+
+  addTitleRow(ws, title, headers.length, 'C65102', 14);
+  addSubtitleRow(ws, dateRow, headers.length);
+  addBlankRow(ws);
+  addHeaderRow(ws, headers, 'C65102');
+
+  let serial = 1;
+  const sortedExpenses = [...expenses].sort((a, b) => {
+    const da = a.expenseDate || '';
+    const db = b.expenseDate || '';
+    return da.localeCompare(db);
+  });
+
+  for (let i = 0; i < sortedExpenses.length; i++) {
+    const e = sortedExpenses[i];
+    const dailyTotal = dailyMap.get(e.expenseDate || '') || 0;
+    addDataRow(ws, [
+      serial++,
       e.expenseDate ? formatDateDDMMYYYY(e.expenseDate) : '—',
       e.description || '—',
       Number(e.totalCost || 0),
-    ]);
+      dailyTotal,
+    ], false, 'C65102', 4);
   }
 
-  // Footer: total row
-  rows.push(['মোট খরচ', '', '', totalCost]);
+  // Monthly total footer
+  const footerRow = addDataRow(ws, ['মোট খরচ', '', '', totalCost, totalCost], true, 'C65102', 4);
 
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet([[title], [dateRow], [''], headers, ...rows]);
+  setupPrint(ws, 'portrait');
 
-  ws['!cols'] = [
-    { wch: 8 },   // ক্রমিক
-    { wch: 14 },  // তারিখ
-    { wch: 45 },  // মালের বিবরণ
-    { wch: 16 },  // খরচ
-  ];
-
-  ws['!merges'] = [
-    { s: { r: 0, c: 0 }, e: { r: 0, c: 3 } },
-    { s: { r: 1, c: 0 }, e: { r: 1, c: 3 } },
-  ];
-
-  // Title style
-  const tc = ws['A1'];
-  if (tc) tc.s = {
-    alignment: { horizontal: 'center', vertical: 'center' },
-    font: { bold: true, sz: 14, name: 'Arial', color: { rgb: 'C65102' } },
-  };
-  const dc = ws['A2'];
-  if (dc) dc.s = {
-    alignment: { horizontal: 'center', vertical: 'center' },
-    font: { sz: 10, name: 'Arial', italic: true, color: { rgb: '666666' } },
-  };
-
-  // Header row (row 3)
-  styleHeaderRow(ws, headers.length, 'C65102', 3);
-
-  // Data rows
-  for (let r = 4; r <= 4 + expenses.length; r++) {
-    for (let c = 0; c < headers.length; c++) {
-      const cell = ws[XLSX.utils.encode_cell({ r, c })];
-      if (cell) {
-        const isFooter = r === 4 + expenses.length;
-        cell.s = {
-          alignment: { vertical: 'center', wrapText: true },
-          font: { sz: 10, name: 'Arial', ...(isFooter ? { bold: true, color: { rgb: 'C65102' } } : {}) },
-          fill: isFooter ? { fgColor: { rgb: 'FFF2CC' } } : { fgColor: { rgb: (r % 2 === 0) ? 'F2F2F2' : 'FFFFFF' } },
-          border: {
-            top: { style: 'thin', color: { rgb: isFooter ? 'C65102' : 'D9D9D9' } },
-            bottom: { style: 'thin', color: { rgb: isFooter ? 'C65102' : 'D9D9D9' } },
-            left: { style: 'thin', color: { rgb: 'D9D9D9' } },
-            right: { style: 'thin', color: { rgb: 'D9D9D9' } },
-          },
-        };
-        if (c === 3) cell.s.alignment = { ...cell.s.alignment, horizontal: 'right' };
-      }
-    }
-  }
-
-  XLSX.utils.book_append_sheet(wb, ws, `বাজার খরচ ${month}`);
-  return buildXlsxResponse(wb, `বাজার_খরচ_${month}_${year}.xlsx`, 'portrait');
+  return sendWorkbook(wb, `বাজার_খরচ_${month}_${year}.xlsx`);
 }
