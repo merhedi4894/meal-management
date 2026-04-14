@@ -140,7 +140,7 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
   const [newSettingOpen, setNewSettingOpen] = useState(false);
   const [newSettingForm, setNewSettingForm] = useState<Record<string, string>>({ month: currentMonth, year: currentYear });
 
-  // ===== CSV ডাউনলোড state =====
+  // ===== Excel ডাউনলোড state =====
   const [csvOpen, setCsvOpen] = useState(false);
   const [csvMonth, setCsvMonth] = useState('');
   const [csvYear, setCsvYear] = useState(currentYear);
@@ -1454,44 +1454,34 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
     } catch { return d; }
   };
 
-  // ===== Excel ডাউনলোড — বকেয়া / অগ্রিম (HTML table XLS for Unicode) =====
+  // ===== Excel ডাউনলোড — বকেয়া / অগ্রিম (Real .xlsx via API) =====
   const downloadBalanceExcel = (type: 'due' | 'advance') => {
     const employees = type === 'due' ? filteredDueEmployees : filteredAdvanceEmployees;
     if (employees.length === 0) return;
-
-    const label = type === 'due' ? 'বকেয়া টাকা' : 'অগ্রিম টাকা';
-    const total = type === 'due'
-      ? employees.reduce((s, e) => s + Math.abs(e.curBalance), 0)
-      : employees.reduce((s, e) => s + e.curBalance, 0);
-
-    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
-<style>td,th{mso-number-format:"\\@";border:1px solid #ddd;padding:6px 10px;font-family:'Nirmala UI','SolaimanLipi',Arial,sans-serif;font-size:13px}
-th{background:#f0f0f0;font-weight:bold;text-align:center}
-.num{text-align:right;mso-number-format:"0"} .neg{color:red;font-weight:bold} .pos{color:#006600;font-weight:bold}
-.footer td{font-weight:bold;background:#f9f9f9}</style></head>
-<body><table>
-<thead><tr><th>ক্রমিক</th><th>অফিস আইডি</th><th>নাম</th><th>পদবী</th><th>মোবাইল</th><th>পরিমাণ (টাকা)</th></tr></thead>
-<tbody>${employees.map((e, i) => `<tr><td class="num">${i + 1}</td><td>${e.officeId}</td><td>${e.name || '—'}</td><td>${(e as any).designation || '—'}</td><td>${e.mobile || '—'}</td><td class="num ${type === 'due' ? 'neg' : 'pos'}">${type === 'due' ? Math.abs(e.curBalance) : e.curBalance}</td></tr>`).join('')}
-<tr class="footer"><td colspan="5" style="text-align:right">মোট</td><td class="num ${type === 'due' ? 'neg' : 'pos'}">${total}</td></tr>
-</tbody></table></body></html>`;
-
-    const blob = new Blob(['\uFEFF' + html], { type: 'application/vnd.ms-excel;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${type === 'due' ? 'বকেয়া_টাকা' : 'অগ্রিম_টাকা'}_${new Date().toISOString().split('T')[0]}.xls`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const balType = type === 'due' ? 'due' : 'advance';
+    window.open(`/api/export-xlsx?type=balance&balType=${balType}`, '_blank');
   };
 
-  const handleExportCSV = () => {
-    const params = new URLSearchParams({ action: 'export' });
-    if (csvMonth) params.set('adminMonth', csvMonth);
-    if (csvYear) params.set('adminYear', csvYear);
-    window.open(`/api/entries?${params}`, '_blank');
+  const handleExportExcel = () => {
+    const params = new URLSearchParams({ type: 'data' });
+    if (csvMonth && csvMonth !== 'all') params.set('month', csvMonth);
+    if (csvYear) params.set('year', csvYear);
+    window.open(`/api/export-xlsx?${params}`, '_blank');
     setCsvOpen(false);
+  };
+
+  // ===== Monthly Meal Excel Download =====
+  const handleDownloadMonthlyMeal = () => {
+    if (!monthlyMealSummary) return;
+    const params = new URLSearchParams({ type: 'monthly', month: monthlyMealMonth, year: monthlyMealYear });
+    window.open(`/api/export-xlsx?${params}`, '_blank');
+  };
+
+  // ===== Daily Meal Order Excel Download =====
+  const handleDownloadDailyOrder = () => {
+    if (!amoOrderDate) return;
+    const params = new URLSearchParams({ type: 'daily', orderDate: amoOrderDate });
+    window.open(`/api/export-xlsx?${params}`, '_blank');
   };
 
   // ===== মোবাইল নম্বর সিঙ্ক =====
@@ -1988,7 +1978,7 @@ th{background:#f0f0f0;font-weight:bold;text-align:center}
       {/* Admin Panel Header */}
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="outline" size="sm" onClick={() => setCsvOpen(true)} className="gap-1 text-xs">
-          <Download className="h-3 w-3" /> CSV ডাউনলোড
+          <Download className="h-3 w-3" /> Excel ডাউনলোড
         </Button>
         <Button variant="outline" size="sm" onClick={() => { setMemberImportOpen(true); setMemberImportStep('url'); setMemberImportPreview(null); setMemberImportResult(null); setMemberImportSheets([]); setMemberImportSelectedSheet(''); setMemberColumnMap({}); }} className="gap-1 text-xs border-blue-300 text-blue-700 hover:bg-blue-50">
           <Users className="h-3 w-3" />
@@ -2157,9 +2147,16 @@ th{background:#f0f0f0;font-weight:bold;text-align:center}
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
                   <p className="text-xs font-medium text-slate-600">মোট অর্ডার: {filteredOrders.length} টি{amoSelectedUser ? ` (${amoSelectedUser.name})` : ''}</p>
-                  <Button variant="ghost" size="sm" onClick={fetchAmoOrders} className="text-xs gap-1">
-                    <RefreshCw className="h-3 w-3" /> রিফ্রেশ
-                  </Button>
+                  <div className="flex items-center gap-1">
+                    {filteredOrders.length > 0 && (
+                      <Button variant="ghost" size="sm" onClick={handleDownloadDailyOrder} className="text-xs gap-1 text-emerald-600 hover:text-emerald-800 hover:bg-emerald-50" title="Excel ডাউনলোড">
+                        <Download className="h-3 w-3" /> ডাউনলোড
+                      </Button>
+                    )}
+                    <Button variant="ghost" size="sm" onClick={fetchAmoOrders} className="text-xs gap-1">
+                      <RefreshCw className="h-3 w-3" /> রিফ্রেশ
+                    </Button>
+                  </div>
                 </div>
                 {/* বিভাগ অনুযায়ী অর্ডার কাউন্ট */}
                 {filteredOrders.length > 0 && (
@@ -3045,7 +3042,16 @@ th{background:#f0f0f0;font-weight:bold;text-align:center}
                       onClick={() => setMonthlyMealDetailsOpen(!monthlyMealDetailsOpen)}
                       className="flex items-center justify-between cursor-pointer hover:bg-slate-50 rounded px-1 py-1 transition-colors"
                     >
-                      <p className="text-xs font-medium text-slate-700">📋 ব্যক্তিগত বিস্তারিত ({monthlyMealSummary.details.length} জন)</p>
+                      <div className="flex items-center gap-2">
+                        <p className="text-xs font-medium text-slate-700">📋 ব্যক্তিগত বিস্তারিত ({monthlyMealSummary.details.length} জন)</p>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleDownloadMonthlyMeal(); }}
+                          className="ml-auto flex items-center gap-0.5 text-[10px] font-medium text-emerald-600 hover:text-emerald-800 hover:underline"
+                          title="Excel ডাউনলোড"
+                        >
+                          <Download className="h-3 w-3" /> ডাউনলোড
+                        </button>
+                      </div>
                       <div className="flex items-center gap-1">
                         <span className="text-[10px] font-medium text-blue-600">{monthlyMealDetailsOpen ? '▸ সংকোচন করুন' : '▸ বিস্তারিত দেখুন'}</span>
                         <ChevronDown className={`h-3 w-3 text-blue-600 transition-transform ${monthlyMealDetailsOpen ? 'rotate-180' : ''}`} />
@@ -3435,16 +3441,16 @@ th{background:#f0f0f0;font-weight:bold;text-align:center}
         </DialogContent>
       </Dialog>
 
-      {/* CSV ডাউনলোড Dialog */}
+      {/* Excel ডাউনলোড Dialog */}
       <Dialog open={csvOpen} onOpenChange={setCsvOpen}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <Download className="h-5 w-5 text-emerald-600" /> CSV ডাউনলোড
+              <Download className="h-5 w-5 text-emerald-600" /> Excel ডাউনলোড
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
-            <p className="text-sm text-slate-600">মাস ও বছর সিলেক্ট করে ডাটাবেজ ডাউনলোড করুন।</p>
+            <p className="text-sm text-slate-600">মাস ও বছর সিলেক্ট করে ডাটাবেজ Excel ফাইল ডাউনলোড করুন।</p>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
                 <label className="text-xs font-medium text-slate-600">মাস</label>
@@ -3464,7 +3470,7 @@ th{background:#f0f0f0;font-weight:bold;text-align:center}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCsvOpen(false)}>বাতিল</Button>
-            <Button onClick={handleExportCSV} disabled={!csvYear} className="bg-emerald-600 hover:bg-emerald-700 gap-1">
+            <Button onClick={handleExportExcel} disabled={!csvYear} className="bg-emerald-600 hover:bg-emerald-700 gap-1">
               <Download className="h-4 w-4" /> ডাউনলোড
             </Button>
           </DialogFooter>
