@@ -332,9 +332,9 @@ export async function GET(request: NextRequest) {
         }
       }
 
-      // ৩. ফাঁকা entries ডিলিট (0 meals + 0 deposit + no sourceOrderId or sourceOrderId links to nothing)
+      // ৩. ফাঁকা entries ডিলিট — কিন্তু ইম্পোর্ট করা মেম্বার (যাদের নাম/officeId আছে) রাখুন
       const emptyEntries = await query(
-        "SELECT id FROM MealEntry WHERE breakfastCount = 0 AND lunchCount = 0 AND morningSpecial = 0 AND lunchSpecial = 0 AND deposit = 0 AND (sourceOrderId IS NULL OR length(sourceOrderId) = 0)"
+        "SELECT id FROM MealEntry WHERE breakfastCount = 0 AND lunchCount = 0 AND morningSpecial = 0 AND lunchSpecial = 0 AND deposit = 0 AND (sourceOrderId IS NULL OR length(sourceOrderId) = 0) AND (name IS NULL OR name = '') AND (officeId IS NULL OR officeId = '')"
       );
       for (const row of emptyEntries.rows) {
         try { await query('DELETE FROM MealEntry WHERE id = ?', [(row as any).id]); results.emptyDeleted++; } catch { /* skip */ }
@@ -646,74 +646,113 @@ export async function GET(request: NextRequest) {
       if (!searchQuery) return NextResponse.json({ success: false, error: 'কোয়েরি দিন' });
 
       const q = searchQuery.trim();
+      const qLower = q.toLowerCase();
       const qClean = q.replace(/\D/g, '');
+      const likePattern = `%${qLower}%`;
+      const mobilePattern = qClean.length >= 3 ? `%${qClean}%` : '';
+      const qStripped = stripLeadingZeros(qClean);
+      const mobileStrippedPattern = qStripped !== qClean && qStripped.length >= 3 ? `%${qStripped}%` : '';
 
-      const allEntries = await db.mealEntry.findMany({
-        orderBy: { createdAt: 'desc' }
-      });
+      const userMap = new Map<string, { officeId: string; name: string; mobile: string; designation: string }>();
 
-      let matched: typeof allEntries = [];
+      // ১. MealEntry থেকে SQL WHERE দিয়ে খুঁজুন
+      try {
+        let sql = "SELECT DISTINCT officeId, name, mobile, designation FROM MealEntry WHERE officeId != '' AND (";
+        const params: string[] = [];
+        // officeId match
+        sql += "LOWER(officeId) LIKE ?";
+        params.push(likePattern);
+        // mobile match
+        if (mobilePattern) {
+          sql += " OR mobile LIKE ?";
+          params.push(mobilePattern);
+          if (mobileStrippedPattern) {
+            sql += " OR mobile LIKE ?";
+            params.push(mobileStrippedPattern);
+          }
+        }
+        // name match
+        if (q.length >= 2 && !/^\d+$/.test(q)) {
+          sql += " OR LOWER(name) LIKE ?";
+          params.push(likePattern);
+        }
+        sql += ") LIMIT 10";
 
-      // Match by officeId
-      if (q) {
-        matched = allEntries.filter(e => e.officeId.toLowerCase().includes(q.toLowerCase()));
-      }
+        const result = await query(sql, params);
+        for (const row of result.rows) {
+          const r = row as any;
+          const oid = (r.officeId || '').trim();
+          if (!oid) continue;
+          const key = oid.toLowerCase();
+          const existing = userMap.get(key);
+          const newScore = (r.name || '').length + (r.mobile || '').length + (r.designation || '').length * 2 + ((r.mobile && r.mobile.length > 5) ? 100 : 0) + ((r.designation && r.designation.length > 0) ? 50 : 0);
+          const existingScore = existing ? (existing.name.length + existing.mobile.length + existing.designation.length * 2 + ((existing.mobile && existing.mobile.length > 5) ? 100 : 0) + ((existing.designation && existing.designation.length > 0) ? 50 : 0)) : 0;
+          if (!existing || newScore > existingScore) {
+            userMap.set(key, { officeId: oid, name: (r.name || '').trim(), mobile: (r.mobile || '').trim(), designation: (r.designation || '').trim() });
+          }
+        }
+      } catch { /* silent */ }
 
-      // Match by mobile (strip leading zeros for comparison)
-      if (matched.length === 0 && qClean.length >= 4) {
-        const qStripped = stripLeadingZeros(qClean);
-        matched = allEntries.filter(e => {
-          if (!e.mobile) return false;
-          const mobileClean = (e.mobile || '').replace(/\D/g, '');
-          const mobileStripped = stripLeadingZeros(mobileClean);
-          return mobileStripped === qStripped || mobileStripped.includes(qStripped) || qStripped.includes(mobileStripped);
-        });
-      }
+      // ২. MealUser থেকেও খুঁজুন
+      try {
+        let userSql = "SELECT officeId, name, mobile, designation FROM MealUser WHERE (";
+        const uParams: string[] = [];
+        userSql += "LOWER(officeId) LIKE ?";
+        uParams.push(likePattern);
+        if (mobilePattern) {
+          userSql += " OR mobile LIKE ?";
+          uParams.push(mobilePattern);
+          if (mobileStrippedPattern) {
+            userSql += " OR mobile LIKE ?";
+            uParams.push(mobileStrippedPattern);
+          }
+        }
+        if (q.length >= 2 && !/^\d+$/.test(q)) {
+          userSql += " OR LOWER(name) LIKE ?";
+          uParams.push(likePattern);
+        }
+        userSql += ") LIMIT 10";
 
-      // Match by name (Bengali or English)
-      if (matched.length === 0 && q.length >= 2 && !/^\d+$/.test(q)) {
-        matched = allEntries.filter(e => e.name && e.name.toLowerCase().includes(q.toLowerCase()));
-      }
+        const userResult = await query(userSql, uParams);
+        for (const row of userResult.rows) {
+          const r = row as any;
+          const oid = (r.officeId || '').trim();
+          if (!oid) continue;
+          const key = oid.toLowerCase();
+          if (!userMap.has(key)) {
+            userMap.set(key, { officeId: oid, name: (r.name || '').trim(), mobile: (r.mobile || '').trim(), designation: (r.designation || '').trim() });
+          } else {
+            const existing = userMap.get(key)!;
+            if ((!existing.designation || existing.designation.length === 0) && (r.designation || '').trim().length > 0) {
+              existing.designation = (r.designation || '').trim();
+            }
+            if ((!existing.mobile || existing.mobile.length < 5) && (r.mobile || '').trim().length >= 5) {
+              existing.mobile = (r.mobile || '').trim();
+            }
+          }
+        }
+      } catch { /* silent */ }
 
-      if (matched.length === 0) {
+      if (userMap.size === 0) {
         return NextResponse.json({ success: false, error: 'কোনো তথ্য পাওয়া যায়নি' });
       }
 
-      // Pick entry with most complete data for each officeId
-      const userMap = new Map<string, { officeId: string; name: string; mobile: string; designation: string }>();
-      for (const e of matched) {
-        const key = e.officeId || `_${e.mobile}`;
-        const existing = userMap.get(key);
-        const mobileBonus = (e.mobile && e.mobile.length > 5) ? 100 : 0;
-        const desigBonus = (e.designation && e.designation.length > 0) ? 50 : 0;
-        const existingMB = existing ? ((existing.mobile && existing.mobile.length > 5) ? 100 : 0) : 0;
-        const existingDB = existing ? ((existing.designation && existing.designation.length > 0) ? 50 : 0) : 0;
-        const existingScore = existing ? (existing.name.length + existing.mobile.length + existing.designation.length * 2 + existingMB + existingDB) : 0;
-        const newScore = (e.name || '').length + (e.mobile || '').length + (e.designation?.length || 0) * 2 + mobileBonus + desigBonus;
-        if (!existing || newScore > existingScore) {
-          userMap.set(key, { officeId: e.officeId || '', name: e.name || '', mobile: e.mobile || '', designation: e.designation || '' });
-        }
-      }
       let users = [...userMap.values()].slice(0, 5);
 
-      // মোবাইল নম্বর মিসিং হলে সব entry থেকে মোবাইল ভরান (officeId ও নাম দিয়ে)
+      // মোবাইল নম্বর মিসিং হলে MealEntry থেকে ভরান
       for (const u of users) {
         if (!u.mobile || u.mobile.length < 5) {
-          let filler = allEntries.find((e: any) => e.officeId === u.officeId && e.mobile && e.mobile.length >= 5);
-          if (!filler && u.name) {
-            filler = allEntries.find((e: any) => e.name === u.name && e.mobile && e.mobile.length >= 5);
-          }
-          if (filler) u.mobile = filler.mobile;
+          try {
+            const fillerRows = await query(
+              'SELECT mobile FROM MealEntry WHERE officeId = ? AND mobile IS NOT NULL AND length(mobile) >= 5 LIMIT 1',
+              [u.officeId]
+            );
+            if (fillerRows.rows.length > 0) {
+              u.mobile = (fillerRows.rows[0] as any).mobile;
+            }
+          } catch { /* silent */ }
         }
-        // পদবী মিসিং হলে সব entry থেকে পদবী ভরান (officeId ও নাম দিয়ে)
-        if (!u.designation || u.designation.length === 0) {
-          let dFiller = allEntries.find((e: any) => e.officeId === u.officeId && e.designation && e.designation.length > 0);
-          if (!dFiller && u.name) {
-            dFiller = allEntries.find((e: any) => e.name === u.name && e.designation && e.designation.length > 0);
-          }
-          if (dFiller) u.designation = dFiller.designation || '';
-        }
-        // MealEntry তে না পাওয়া গেলে MealUser ও MealOrder টেবিল থেকেও পদবী খুঁজুন
+        // পদবী মিসিং হলে MealUser ও MealOrder টেবিল থেকেও পদবী খুঁজুন
         if (!u.designation || u.designation.length === 0) {
           try {
             const tables = [
@@ -722,8 +761,8 @@ export async function GET(request: NextRequest) {
             ];
             for (const sql of tables) {
               const rows = await query(sql, [u.officeId]);
-              if (rows && Array.isArray(rows) && rows.length > 0 && rows[0].designation) {
-                u.designation = rows[0].designation;
+              if (rows && Array.isArray(rows) && rows.length > 0 && (rows[0] as any).designation) {
+                u.designation = (rows[0] as any).designation;
                 break;
               }
             }
@@ -849,102 +888,166 @@ export async function GET(request: NextRequest) {
 
       const q = searchQuery.trim().toLowerCase();
       const qClean = q.replace(/\D/g, '');
-
-      const allEntries = await db.mealEntry.findMany({
-        orderBy: { createdAt: 'desc' }
-      });
+      const likePattern = `%${q}%`;
+      const mobilePattern = qClean.length >= 3 ? `%${qClean}%` : '';
+      const qStripped = stripLeadingZeros(qClean);
+      const mobileStrippedPattern = qStripped !== qClean && qStripped.length >= 3 ? `%${qStripped}%` : '';
 
       // Determine dedup key: designation field deduplicates by designation value
       const dedupByDesignation = field === 'designation';
-
-      // সব ফিল্ডে partial match করুন — একসাথে officeId, name, mobile
-      // Pick entry with most complete data for each key
       const userMap = new Map<string, { officeId: string; name: string; mobile: string; designation: string }>();
-      for (const e of allEntries) {
-        let isMatched = false;
 
-        // Field-specific matching
-        if (field === 'officeId') {
-          // only match against officeId
-          if (q && e.officeId.toLowerCase().includes(q)) isMatched = true;
-        } else if (field === 'name') {
-          // only match against name
-          if (q && e.name && e.name.toLowerCase().includes(q)) isMatched = true;
-        } else if (field === 'mobile') {
-          // only match against mobile
-          if (qClean.length >= 3 && e.mobile) {
-            const mobileDigits = e.mobile.replace(/\D/g, '');
-            const mobileStripped = stripLeadingZeros(mobileDigits);
-            const qStripped = stripLeadingZeros(qClean);
-            if (mobileDigits.includes(qClean) || mobileStripped.includes(qStripped) || qStripped.includes(mobileStripped)) isMatched = true;
-          }
-        } else if (field === 'designation') {
-          // only match against designation
-          if (q && e.designation && e.designation.toLowerCase().includes(q)) isMatched = true;
-        } else {
-          // original behavior: search all fields
-          if (q && e.officeId.toLowerCase().includes(q)) isMatched = true;
-          if (!isMatched && q.length >= 2 && e.name && e.name.toLowerCase().includes(q)) isMatched = true;
-          if (!isMatched && qClean.length >= 3) {
-            if (e.mobile) {
-              const mobileDigits = e.mobile.replace(/\D/g, '');
-              const mobileStripped = stripLeadingZeros(mobileDigits);
-              const qStripped = stripLeadingZeros(qClean);
-              if (mobileDigits.includes(qClean) || mobileStripped.includes(qStripped) || qStripped.includes(mobileStripped)) isMatched = true;
-            }
+      // ১. MealEntry থেকে SQL WHERE দিয়ে খুঁজুন (পারফরম্যান্স উন্নতি)
+      let sql = "SELECT DISTINCT officeId, name, mobile, designation FROM MealEntry WHERE officeId != '' AND (";
+      const params: string[] = [];
+      if (field === 'officeId') {
+        sql += "LOWER(officeId) LIKE ?";
+        params.push(likePattern);
+      } else if (field === 'name') {
+        sql += "LOWER(name) LIKE ?";
+        params.push(likePattern);
+      } else if (field === 'mobile') {
+        if (mobilePattern) {
+          sql += "mobile LIKE ?";
+          params.push(mobilePattern);
+          if (mobileStrippedPattern) {
+            sql += " OR mobile LIKE ?";
+            params.push(mobileStrippedPattern);
           }
         }
+      } else if (field === 'designation') {
+        sql += "LOWER(designation) LIKE ?";
+        params.push(likePattern);
+      } else {
+        // সব ফিল্ডে সার্চ
+        sql += "LOWER(officeId) LIKE ? OR LOWER(name) LIKE ?";
+        params.push(likePattern, likePattern);
+        if (mobilePattern) {
+          sql += " OR mobile LIKE ?";
+          params.push(mobilePattern);
+          if (mobileStrippedPattern) {
+            sql += " OR mobile LIKE ?";
+            params.push(mobileStrippedPattern);
+          }
+        }
+      }
+      sql += ") LIMIT 30";
 
-        if (isMatched) {
-          // For designation, deduplicate by designation value
+      try {
+        const result = await query(sql, params);
+        for (const row of result.rows) {
+          const r = row as any;
+          const oid = (r.officeId || '').trim();
+          if (!oid) continue;
           const key = dedupByDesignation
-            ? (e.designation || `_${e.officeId}`)
-            : (e.officeId || `_${e.mobile}`);
+            ? (r.designation || `_${oid}`)
+            : oid.toLowerCase();
           const existing = userMap.get(key);
-          const mobileBonus = (e.mobile && e.mobile.length > 5) ? 100 : 0;
-          const desigBonus = (e.designation && e.designation.length > 0) ? 50 : 0;
+          const mobileBonus = (r.mobile && r.mobile.length > 5) ? 100 : 0;
+          const desigBonus = (r.designation && r.designation.length > 0) ? 50 : 0;
           const existingMB = existing ? ((existing.mobile && existing.mobile.length > 5) ? 100 : 0) : 0;
           const existingDB = existing ? ((existing.designation && existing.designation.length > 0) ? 50 : 0) : 0;
           const existingScore = existing ? (existing.name.length + existing.mobile.length + existing.designation.length * 2 + existingMB + existingDB) : 0;
-          const newScore = (e.name || '').length + (e.mobile || '').length + (e.designation?.length || 0) * 2 + mobileBonus + desigBonus;
+          const newScore = (r.name || '').length + (r.mobile || '').length + (r.designation || '').length * 2 + mobileBonus + desigBonus;
           if (!existing || newScore > existingScore) {
-            userMap.set(key, { officeId: e.officeId || '', name: e.name || '', mobile: e.mobile || '', designation: e.designation || '' });
+            userMap.set(key, { officeId: oid, name: (r.name || '').trim(), mobile: (r.mobile || '').trim(), designation: (r.designation || '').trim() });
           }
-          if (userMap.size >= 10) break;
         }
-      }
+      } catch { /* silent */ }
+
+      // ২. MealUser থেকেও খুঁজুন (সাইনআপ করা ইউজাররা)
+      try {
+        let userSql = "SELECT officeId, name, mobile, designation FROM MealUser WHERE (";
+        const uParams: string[] = [];
+        if (field === 'officeId') {
+          userSql += "LOWER(officeId) LIKE ?";
+          uParams.push(likePattern);
+        } else if (field === 'name') {
+          userSql += "LOWER(name) LIKE ?";
+          uParams.push(likePattern);
+        } else if (field === 'mobile') {
+          if (mobilePattern) {
+            userSql += "mobile LIKE ?";
+            uParams.push(mobilePattern);
+            if (mobileStrippedPattern) {
+              userSql += " OR mobile LIKE ?";
+              uParams.push(mobileStrippedPattern);
+            }
+          }
+        } else if (field === 'designation') {
+          userSql += "LOWER(designation) LIKE ?";
+          uParams.push(likePattern);
+        } else {
+          userSql += "LOWER(officeId) LIKE ? OR LOWER(name) LIKE ?";
+          uParams.push(likePattern, likePattern);
+          if (mobilePattern) {
+            userSql += " OR mobile LIKE ?";
+            uParams.push(mobilePattern);
+            if (mobileStrippedPattern) {
+              userSql += " OR mobile LIKE ?";
+              uParams.push(mobileStrippedPattern);
+            }
+          }
+        }
+        userSql += ") LIMIT 30";
+
+        const userResult = await query(userSql, uParams);
+        for (const row of userResult.rows) {
+          const r = row as any;
+          const oid = (r.officeId || '').trim();
+          if (!oid) continue;
+          const key = dedupByDesignation
+            ? (r.designation || `_${oid}`)
+            : oid.toLowerCase();
+          if (!userMap.has(key)) {
+            userMap.set(key, { officeId: oid, name: (r.name || '').trim(), mobile: (r.mobile || '').trim(), designation: (r.designation || '').trim() });
+          } else {
+            // MealUser এর data দিয়ে missing field ভরান
+            const existing = userMap.get(key)!;
+            if ((!existing.designation || existing.designation.length === 0) && (r.designation || '').trim().length > 0) {
+              existing.designation = (r.designation || '').trim();
+            }
+            if ((!existing.mobile || existing.mobile.length < 5) && (r.mobile || '').trim().length >= 5) {
+              existing.mobile = (r.mobile || '').trim();
+            }
+          }
+        }
+      } catch { /* silent */ }
+
+      // ৩. MealOrder থেকেও পদবী ফিলার
+      try {
+        const matchedOids = [...userMap.keys()].filter(k => {
+          const u = userMap.get(k);
+          return u && (!u.designation || u.designation.length === 0);
+        });
+        if (matchedOids.length > 0) {
+          const placeholders = matchedOids.map(() => '?').join(',');
+          const orderResult = await query(
+            `SELECT DISTINCT officeId, designation FROM MealOrder WHERE officeId IN (${placeholders}) AND designation IS NOT NULL AND designation != ''`,
+            matchedOids.map(k => userMap.get(k)!.officeId)
+          );
+          for (const row of orderResult.rows) {
+            const r = row as any;
+            const oid = (r.officeId || '').trim().toLowerCase();
+            const desig = (r.designation || '').trim();
+            const existing = userMap.get(oid);
+            if (existing && desig.length > 0) existing.designation = desig;
+          }
+        }
+      } catch { /* silent */ }
+
       let users = [...userMap.values()];
 
-      // মোবাইল নম্বর মিসিং হলে সব entry থেকে মোবাইল ভরান (officeId ও নাম দিয়ে)
+      // মোবাইল নম্বর মিসিং হলে MealEntry থেকে মোবাইল ভরান
       for (const u of users) {
         if (!u.mobile || u.mobile.length < 5) {
-          let filler = allEntries.find((e: any) => e.officeId === u.officeId && e.mobile && e.mobile.length >= 5);
-          if (!filler && u.name) {
-            filler = allEntries.find((e: any) => e.name === u.name && e.mobile && e.mobile.length >= 5);
-          }
-          if (filler) u.mobile = filler.mobile;
-        }
-        // পদবী মিসিং হলে সব entry থেকে পদবী ভরান (officeId ও নাম দিয়ে)
-        if (!u.designation || u.designation.length === 0) {
-          let dFiller = allEntries.find((e: any) => e.officeId === u.officeId && e.designation && e.designation.length > 0);
-          if (!dFiller && u.name) {
-            dFiller = allEntries.find((e: any) => e.name === u.name && e.designation && e.designation.length > 0);
-          }
-          if (dFiller) u.designation = dFiller.designation || '';
-        }
-        // MealEntry তে না পাওয়া গেলে MealUser ও MealOrder টেবিল থেকেও পদবী খুঁজুন
-        if (!u.designation || u.designation.length === 0) {
           try {
-            const tables = [
-              'SELECT designation FROM MealUser WHERE officeId = ? AND designation IS NOT NULL AND designation != \'\' LIMIT 1',
-              'SELECT designation FROM MealOrder WHERE officeId = ? AND designation IS NOT NULL AND designation != \'\' LIMIT 1',
-            ];
-            for (const sql of tables) {
-              const rows = await query(sql, [u.officeId]);
-              if (rows && Array.isArray(rows) && rows.length > 0 && rows[0].designation) {
-                u.designation = rows[0].designation;
-                break;
-              }
+            const fillerRows = await query(
+              'SELECT mobile FROM MealEntry WHERE officeId = ? AND mobile IS NOT NULL AND length(mobile) >= 5 LIMIT 1',
+              [u.officeId]
+            );
+            if (fillerRows.rows.length > 0) {
+              u.mobile = (fillerRows.rows[0] as any).mobile;
             }
           } catch { /* silent */ }
         }
