@@ -1836,10 +1836,14 @@ export async function DELETE(request: NextRequest) {
       }
 
       // ===== সব টেবিলের ডাটা গুনুন =====
-      let mealCount = 0, settingCount = 0, orderCount = 0, specialCount = 0, marketCount = 0, userCount = 0;
+      let mealCount = 0, settingCount = 0, orderCount = 0, specialCount = 0, marketCount = 0, userCount = 0, memberCount = 0;
 
       try { mealCount = await db.mealEntry.count(); } catch {}
       try { settingCount = await db.priceSetting.count(); } catch {}
+      try {
+        const r = await query('SELECT COUNT(*) as c FROM OfficeMember');
+        memberCount = Number((r as any).rows?.[0]?.c || 0);
+      } catch {}
       try {
         const r = await query('SELECT COUNT(*) as c FROM MealOrder');
         orderCount = Number((r as any).rows?.[0]?.c || 0);
@@ -1865,6 +1869,7 @@ export async function DELETE(request: NextRequest) {
         { sql: 'DELETE FROM SpecialMealSetting', args: [] },
         { sql: 'DELETE FROM MarketExpense', args: [] },
         { sql: 'DELETE FROM MealUser', args: [] },
+        { sql: 'DELETE FROM OfficeMember', args: [] },
       ];
 
       try {
@@ -1879,6 +1884,7 @@ export async function DELETE(request: NextRequest) {
           { sql: 'DELETE FROM SpecialMealSetting', args: [], label: 'SpecialMealSetting' },
           { sql: 'DELETE FROM MarketExpense', args: [], label: 'MarketExpense' },
           { sql: 'DELETE FROM MealUser', args: [], label: 'MealUser' },
+          { sql: 'DELETE FROM OfficeMember', args: [], label: 'OfficeMember' },
         ];
         for (const fb of fallbacks) {
           try { await query(fb.sql, fb.args); } catch (e) { console.error(`${fb.label} individual delete error:`, e); }
@@ -1887,7 +1893,7 @@ export async function DELETE(request: NextRequest) {
 
       return NextResponse.json({
         success: true,
-        message: `পুরা ডাটাবেজ ফাকা করা হয়েছে। মিল এন্ট্রি: ${mealCount}, প্রাইস সেটিং: ${settingCount}, মিল অর্ডার: ${orderCount}, রান্নার সেটিং: ${specialCount}, বাজার খরচ: ${marketCount}, ইউজার: ${userCount} — সব ডিলিট হয়েছে।`
+        message: `পুরা ডাটাবেজ ফাকা করা হয়েছে। মিল এন্ট্রি: ${mealCount}, প্রাইস সেটিং: ${settingCount}, মিল অর্ডার: ${orderCount}, রান্নার সেটিং: ${specialCount}, বাজার খরচ: ${marketCount}, ইউজার: ${userCount}, সদস্য: ${memberCount} — সব ডিলিট হয়েছে।`
       });
     }
 
