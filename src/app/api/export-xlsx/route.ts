@@ -251,22 +251,29 @@ async function exportDataSheet(month: string, year: string) {
   // Header row
   addHeaderRow(ws, headers, '4472C4');
 
-  // Data rows
+  // Data rows — skip entries where ALL optional values are zero/empty
   let tB = 0, tL = 0, tMS = 0, tLS = 0, tBill = 0, tDep = 0;
+  let serial = 1;
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i] as any;
-    const user = userMap.get(e.officeId);
-    const enMonth = BN_TO_EN[e.month] || e.month || '';
     const rB = Number(e.breakfastCount) || 0;
     const rL = Number(e.lunchCount) || 0;
     const rMS = Number(e.morningSpecial) || 0;
     const rLS = Number(e.lunchSpecial) || 0;
     const bill = Number(e.totalBill) || 0;
     const dep = Number(e.deposit) || 0;
+    const prevB = Number(e.prevBalance) || 0;
+    const curB = Number(e.curBalance) || 0;
+
+    // Skip row if ALL meal counts, bill, deposit, balances are zero and no deposit date
+    if (rB === 0 && rL === 0 && rMS === 0 && rLS === 0 && bill === 0 && dep === 0 && prevB === 0 && curB === 0 && !e.depositDate) continue;
+
     tB += rB; tL += rL; tMS += rMS; tLS += rLS; tBill += bill; tDep += dep;
 
+    const user = userMap.get(e.officeId);
+    const enMonth = BN_TO_EN[e.month] || e.month || '';
     const rowData: (string | number)[] = [
-      i + 1, formatDateDDMMYYYY(e.entryDate),
+      serial++, formatDateDDMMYYYY(e.entryDate),
       `${e.month || ''} (${enMonth})`, e.year || '',
       e.officeId || '', e.name || '', e.designation || user?.designation || '', e.mobile || user?.mobile || '',
     ];
@@ -277,8 +284,8 @@ async function exportDataSheet(month: string, year: string) {
     if (hasTotalBill) rowData.push(bill);
     if (hasDeposit) rowData.push(dep);
     if (hasDepositDate) rowData.push(e.depositDate ? formatDateDDMMYYYY(e.depositDate) : '');
-    if (hasPrevBalance) rowData.push(Number(e.prevBalance) || 0);
-    if (hasCurBalance) rowData.push(Number(e.curBalance) || 0);
+    if (hasPrevBalance) rowData.push(prevB);
+    if (hasCurBalance) rowData.push(curB);
 
     addDataRow(ws, rowData, false, '4472C4', firstNumCol);
   }
