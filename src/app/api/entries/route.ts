@@ -1260,10 +1260,30 @@ export async function GET(request: NextRequest) {
       }
       const latestBalance = runningBalance;
 
-      // Filter by month/year
+      // ===== সর্বমোট জমা (সব মাস মিলিয়ে) =====
+      const totalAllDeposit = enrichedEntries.reduce((sum, e) => sum + Number(e.deposit || 0), 0);
+      const totalAllBill = enrichedEntries.reduce((sum, e) => sum + Number(e.calculatedBill || 0), 0);
+
+      // ===== আগের ব্যালেন্স: নির্বাচিত মাসের আগের সব এন্ট্রি থেকে =====
+      // কেউ আগে জমা না দিলে তার আগের ব্যালেন্স 0 ধরে হিসাব করা হবে
       const isAllMonth = !month || month === 'সকল মাস';
       const isAllYear = !year;
 
+      let prevMonthBalance = 0;
+      if (!isAllMonth || !isAllYear) {
+        // নির্বাচিত মাসের প্রথম এন্ট্রির আগের শেষ এন্ট্রির curBalance
+        const firstFiltered = enrichedEntries.find(e => {
+          const mMatch = isAllMonth || e.month === month;
+          const yMatch = isAllYear || String(e.year) === String(year);
+          return mMatch && yMatch;
+        });
+        if (firstFiltered) {
+          prevMonthBalance = firstFiltered.prevBalance;
+        }
+        // আগে কোনো এন্ট্রি না থাকলে prevMonthBalance = 0 (default)
+      }
+
+      // Filter by month/year
       const filtered = enrichedEntries.filter(e => {
         const mMatch = isAllMonth || e.month === month;
         const yMatch = isAllYear || String(e.year) === String(year);
@@ -1352,6 +1372,7 @@ export async function GET(request: NextRequest) {
 
       return NextResponse.json({
         success: true, user, summary, prices, allPrices, latestBalance, priceWarning,
+        prevMonthBalance, totalAllDeposit, totalAllBill,
         entries: filteredWithActivity.reverse().map((e: any) => ({
           ...e,
           entryDate: entryDateToBD(e.entryDate),

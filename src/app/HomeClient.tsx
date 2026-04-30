@@ -2585,19 +2585,38 @@ function AdminPanel({ onLogout, onMealOrderChange }: { onLogout: () => void; onM
                   </div>
                 </div>
                 <Separator />
-                <div className="grid grid-cols-3 gap-2">
+                {/* আগের ব্যালেন্স + এই মাসের হিসাব */}
+                <div className="grid grid-cols-3 gap-1.5">
+                  <div className="p-1.5 bg-slate-100 rounded">
+                    <p className="text-[10px] text-slate-500">আগের ব্যালেন্স</p>
+                    <p className={`text-sm font-bold ${depositInfo.prevMonthBalance >= 0 ? 'text-slate-700' : 'text-red-600'}`}>
+                      {depositInfo.prevMonthBalance >= 0 ? '' : '-'}{Math.abs(depositInfo.prevMonthBalance || 0)} Tk
+                    </p>
+                  </div>
                   <div className="p-1.5 bg-red-50 rounded">
-                    <p className="text-[10px] text-slate-500">মোট বিল</p>
-                    <p className="text-sm font-bold text-red-700">{depositInfo.summary?.total_bill || 0}  Tk</p>
+                    <p className="text-[10px] text-slate-500">এই মাসের বিল</p>
+                    <p className="text-sm font-bold text-red-700">{depositInfo.summary?.total_bill || 0} Tk</p>
                   </div>
                   <div className="p-1.5 bg-emerald-50 rounded">
-                    <p className="text-[10px] text-slate-500">মোট জমা</p>
-                    <p className="text-sm font-bold text-emerald-700">{depositInfo.summary?.total_deposit || 0}  Tk</p>
+                    <p className="text-[10px] text-slate-500">এই মাসের জমা</p>
+                    <p className="text-sm font-bold text-emerald-700">{depositInfo.summary?.total_deposit || 0} Tk</p>
+                  </div>
+                </div>
+                <Separator />
+                {/* সর্বমোট হিসাব */}
+                <div className="grid grid-cols-3 gap-1.5">
+                  <div className="p-1.5 bg-indigo-50 rounded">
+                    <p className="text-[10px] text-slate-500">সর্বমোট বিল</p>
+                    <p className="text-sm font-bold text-indigo-700">{depositInfo.totalAllBill || 0} Tk</p>
+                  </div>
+                  <div className="p-1.5 bg-teal-50 rounded">
+                    <p className="text-[10px] text-slate-500">সর্বমোট জমা</p>
+                    <p className="text-sm font-bold text-teal-700">{depositInfo.totalAllDeposit || 0} Tk</p>
                   </div>
                   <div className={`p-1.5 rounded ${depositInfo.latestBalance >= 0 ? 'bg-blue-50' : 'bg-amber-50'}`}>
-                    <p className="text-[10px] text-slate-500">ব্যালেন্স</p>
+                    <p className="text-[10px] text-slate-500">মোট ব্যালেন্স</p>
                     <p className={`text-sm font-bold ${depositInfo.latestBalance >= 0 ? 'text-blue-700' : 'text-amber-700'}`}>
-                      {depositInfo.latestBalance >= 0 ? '+' : ''}{depositInfo.latestBalance}  Tk
+                      {depositInfo.latestBalance >= 0 ? '+' : ''}{depositInfo.latestBalance} Tk
                     </p>
                   </div>
                 </div>
@@ -4739,20 +4758,40 @@ function SearchSection() {
                   <p className="text-xs text-amber-700 font-medium">{result.priceWarning}</p>
                 </div>
               )}
-              <div className="flex justify-between items-center p-2 bg-red-50 rounded-lg">
-                <span className="text-xs font-medium text-slate-700">এই মাসের মোট বিল</span>
-                <span className="text-sm font-bold text-red-700">{result.summary.total_bill} টাকা</span>
-              </div>
-              <div className="flex justify-between items-center p-2 bg-emerald-50 rounded-lg">
-                <span className="text-xs font-medium text-slate-700">এই মাসের মোট জমা</span>
-                <span className="text-sm font-bold text-emerald-700">{result.summary.total_deposit} টাকা</span>
+              {/* আগের ব্যালেন্স + এই মাসের হিসাব */}
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-1.5">
+                <div className="flex justify-between items-center p-2 bg-slate-100 rounded-lg">
+                  <span className="text-[10px] font-medium text-slate-600">আগের ব্যালেন্স</span>
+                  <span className={`text-xs font-bold ${result.prevMonthBalance >= 0 ? 'text-slate-700' : 'text-red-600'}`}>
+                    {result.prevMonthBalance >= 0 ? '' : '-'}{Math.abs(result.prevMonthBalance || 0)} Tk
+                  </span>
+                </div>
+                <div className="flex justify-between items-center p-2 bg-red-50 rounded-lg">
+                  <span className="text-[10px] font-medium text-slate-600">এই মাসের বিল</span>
+                  <span className="text-xs font-bold text-red-700">{result.summary.total_bill} Tk</span>
+                </div>
+                <div className="flex justify-between items-center p-2 bg-emerald-50 rounded-lg">
+                  <span className="text-[10px] font-medium text-slate-600">এই মাসের জমা</span>
+                  <span className="text-xs font-bold text-emerald-700">{result.summary.total_deposit} Tk</span>
+                </div>
               </div>
               <Separator />
-              <div className="flex justify-between items-center p-2 bg-amber-50 rounded-lg">
-                <span className="text-xs font-bold text-slate-700">মাসিক অবস্থা (জমা - বিল)</span>
-                <span className={`text-sm font-bold ${netBalance >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
-                  {netBalance >= 0 ? '+' : ''}{netBalance} টাকা
-                </span>
+              {/* সর্বমোট হিসাব */}
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-1.5">
+                <div className="flex justify-between items-center p-2 bg-indigo-50 rounded-lg">
+                  <span className="text-[10px] font-medium text-slate-600">সর্বমোট বিল</span>
+                  <span className="text-xs font-bold text-indigo-700">{result.totalAllBill || 0} Tk</span>
+                </div>
+                <div className="flex justify-between items-center p-2 bg-teal-50 rounded-lg">
+                  <span className="text-[10px] font-medium text-slate-600">সর্বমোট জমা</span>
+                  <span className="text-xs font-bold text-teal-700">{result.totalAllDeposit || 0} Tk</span>
+                </div>
+                <div className={`flex justify-between items-center p-2 rounded-lg ${result.latestBalance >= 0 ? 'bg-emerald-100' : 'bg-red-100'}`}>
+                  <span className="text-[10px] font-bold text-slate-700">মোট ব্যালেন্স</span>
+                  <span className={`text-xs font-bold ${result.latestBalance >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+                    {result.latestBalance >= 0 ? '+' : ''}{result.latestBalance} Tk
+                  </span>
+                </div>
               </div>
               {netBalance > 0 && (
                 <div className="flex items-start gap-2 p-2 bg-blue-50 rounded-lg border border-blue-200">
@@ -4770,13 +4809,6 @@ function SearchSection() {
                   </p>
                 </div>
               )}
-              <Separator />
-              <div className={`flex justify-between items-center p-3 rounded-lg ${result.latestBalance >= 0 ? 'bg-emerald-100' : 'bg-red-100'}`}>
-                <span className="text-sm font-bold text-slate-800">বর্তমান ব্যালেন্স</span>
-                <span className={`text-lg font-bold ${result.latestBalance >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
-                  {result.latestBalance >= 0 ? '+' : ''}{result.latestBalance} টাকা
-                </span>
-              </div>
             </CardContent>
           </Card>
           {/* Meal Details — Collapsible */}
